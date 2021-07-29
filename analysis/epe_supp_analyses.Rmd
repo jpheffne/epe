@@ -1,0 +1,2951 @@
+---
+title: "EPE Supplement Analyses"
+author: "Joey Heffner"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+# EPE Supplement Analysis
+The order of this Markdown will follow the order of results in the supplement.
+
+## Setup
+To run this analysis script you'll have to have the following packages installed (make sure `tidyverse` is updated): 
+
+|Packages1  |Packages2    |Packages3 |Packages4    |
+|:---------:|:-----------:|:--------:|:-----------:|
+|`here`     |`tidyverse`  |`knitr`   |`kableExtra` |
+|`lsr`      |`lme4`       |`lmerTest`|`broom.mixed`|
+|`AICmodavg`|`cowplot`    |`ggrepel` |`gridExtra`  |
+|`permutes` |`doParallel` |`purrr`   |`sjPlot`     |
+|`ggstance` |
+
+To install these packages simply use the `install.packages()` function and put each package name in as a character. 
+
+**Note**: If you've already used the `here()` function in another script, you will have to open a new instance of R to ensure the relative paths works for this script (or manually change the paths).
+
+```{r setup, include=FALSE}
+# Knitr options
+knitr::opts_chunk$set(echo = FALSE, warnings = FALSE, message = FALSE)
+
+# Load study 3 dynamic or not (large dataset)
+read_study3 <- TRUE # if you want to load study 3 dynamic data make TRUE 
+
+# Libraries
+library(here)         # relative paths
+library(tidyverse)    # tidy functions
+library(knitr)        # knit functions
+library(kableExtra)   # extra markdown functions
+library(lsr)          # cohenD()
+library(lme4)         # mixed-effects regressions
+library(lmerTest)     # mixed-effects regressions
+library(broom.mixed)  # tidy()
+library(AICcmodavg)   # predictSE()
+library(cowplot)      # plot_grid()
+library(ggrepel)      # geom_text_repel
+library(gridExtra)    # aesthetics 
+library(permutes)     # permutation testing
+library(doParallel)   # parallel computing 
+library(purrr)        # map functions
+library(sjPlot)       # clean tables
+library(ggstance)     # vertical position dodge
+library(mousetrap)    # mouse tracking analysis
+library(clusterperm)  # cluster-based permutation
+library(exchangr)     # shuffle function
+```
+
+## Data
+
+The general purpose of these experiments was to determine the relative contributions emotions and rewards have on decisions to punish. Experiments 1, 2, and 4 follow a similar design and have similar data structures, while Experiment 3 was a mouse-tracking study and has extremely large data files. Currently, loading Experiment 3 is turned off by default using a simple if statement (see setup code).
+
+```{r read_data}
+# Specify relative paths
+dir_analysis <- here() # should be where analysis script is stored
+dir_parent <- dir_analysis %>% str_remove("/analyses")
+dir_data <- str_c(dir_parent, "/data")
+dir_graphs <- str_c(dir_parent, "/graphs")
+
+# study 1 data
+study1_behavior <- read_csv(str_c(dir_data, "/study1_ug/study1_ug.csv"))
+study1_emotion <- read_csv(str_c(dir_data, "/study1_ug/study1_ec.csv"))
+
+# study 2 data
+study2_reward_only <- read_csv(str_c(dir_data, "/study2_rep/study2_ug_reward_only.csv"))
+study2_reward_emotion<- read_csv(str_c(dir_data, "/study2_rep/study2_ug_reward_emotion.csv"))
+study2_emotion <- read_csv(str_c(dir_data, "/study2_rep/study2_ec.csv"))
+
+# study 3 static data
+study3_behavior <- read_csv(str_c(dir_data, "/study3_jg/study3_jg_all_static.csv"))
+study3_emotion <- read_csv(str_c(dir_data, "/study3_jg/study3_ec_static.csv")) %>% select(-X1)
+
+# study 3 dynamic data
+if (read_study3 == TRUE) {
+  study3_behavior_predict <- read.csv(str_c(dir_data, "/study3_jg/study3_jg_prediction_dynamic.csv"), 
+                                      header = TRUE, stringsAsFactors = FALSE)
+  study3_behavior_feedback <- read.csv(str_c(dir_data, "/study3_jg/study3_jg_feedback_dynamic.csv"), 
+                                       header = TRUE, stringsAsFactors = FALSE)
+  study3_behavior_post <- read.csv(str_c(dir_data, "/study3_jg/study3_jg_post_dynamic.csv"), 
+                                   header = TRUE, stringsAsFactors = FALSE)
+  study3_behavior_decision <- read.csv(str_c(dir_data, "/study3_jg/study3_jg_post_dynamic.csv"), 
+                                       header = TRUE, stringsAsFactors = FALSE)
+}
+
+# study 4 data
+study4_behavior <- read_csv(str_c(dir_data, "/study4_mdd/study4_ug.csv"))
+study4_emotion <- read_csv(str_c(dir_data, "/study4_mdd/study4_ec.csv"))
+```
+
+## Exclusion Criteria
+`exclude` will specify whether participants correctly rated `neutral` on the circumplex. We tell participants in the instructions that "the center of the square represents a neutral, average, everyday feeling." 
+
+We have preregistered a 100x100 pixel square around the center. If participants rate neutral within this square, they will not be excluded (`exclude = keep`) otherwise they will (`exclude = remove`).
+
+```{r exclusion}
+study1_check <- study1_emotion %>% filter(emotion == "neutral") %>% 
+  mutate(exclude = if_else(between(X1, -50, 50) & between(Y1, -50, 50), "keep", "remove"), 
+         study = "study1")
+study2_check <- study2_emotion %>% filter(emotion == "neutral") %>%  
+  mutate(exclude = if_else(between(valence, -50, 50) & between(arousal, -50, 50), "keep", "remove"), 
+         study = "study2")
+study3_check <- study3_emotion %>% filter(word == "Neutral") %>%  
+  mutate(exclude = if_else(between(end_X, -50, 50) & between(end_Y, -50, 50), "keep", "remove"), # note columns names different
+         study = "study3")
+study4_check <- study4_emotion %>% filter(emotion == "neutral") %>%  
+  mutate(exclude = if_else(between(X1, -50, 50) & between(Y1, -50, 50), "keep", "remove"),  # note column names different
+         study = "study4")
+
+# Report exclusions
+all_checks <- study1_check %>% select(study, exclude) %>%
+  bind_rows(study2_check %>% select(study, exclude)) %>%
+  bind_rows(study3_check %>% select(study, exclude)) %>%
+  bind_rows(study4_check %>% select(study, exclude)) %>%
+  group_by(study, exclude) %>% tally()
+
+#kable(all_checks)
+
+## Transfer information to both emotion classificaiton and UG dataframes
+# Transfer
+study1_join <- study1_check %>% select(sub, exclude)
+study2_join <- study2_check %>% select(sub, exclude)
+study3_join <- study3_check %>% select(sub, exclude)
+study4_join <- study4_check %>% select(sub, exclude)
+
+study1_behavior <- left_join(study1_behavior, study1_join, by = "sub") %>% filter(exclude == "keep")
+study2_reward_emotion <- left_join(study2_reward_emotion, study2_join, by = "sub") %>% filter(exclude == "keep")
+study2_reward_only <- left_join(study2_reward_only, study2_join, by = "sub") %>% filter(exclude == "keep")
+study3_behavior <- left_join(study3_behavior, study3_join, by = "sub") %>% filter(exclude == "keep")
+study4_behavior <- left_join(study4_behavior, study4_join, by = "sub") %>% filter(exclude == "keep")
+
+study1_emotion <- left_join(study1_emotion, study1_join, by = "sub") %>% filter(exclude == "keep")
+study2_emotion <- left_join(study2_emotion, study2_join, by = "sub") %>% filter(exclude == "keep")
+study3_emotion <- left_join(study3_emotion, study3_join, by = "sub") %>% filter(exclude == "keep")
+study4_emotion <- left_join(study4_emotion, study4_join, by = "sub") %>% filter(exclude == "keep")
+
+## study 3 dynamic (optional)
+if (read_study3 == TRUE) {
+  study3_behavior_predict <- left_join(study3_behavior_predict, study3_join, by = "sub") %>% filter(exclude == "keep")
+  study3_behavior_feedback <- left_join(study3_behavior_feedback, study3_join, by = "sub") %>% filter(exclude == "keep")
+  study3_behavior_post <- left_join(study3_behavior_post, study3_join, by = "sub") %>% filter(exclude == "keep")
+  study3_behavior_decision <- left_join(study3_behavior_decision, study3_join, by = "sub") %>% filter(exclude == "keep")
+}
+
+## Standardize variables for UG
+study1_behavior <- study1_behavior %>% 
+  select(sub, choice, choice_RT, role, unfairness, EP_X1, EP_Y1, RP, feedback_X1, feedback_Y1, reward, EPE_X1, EPE_Y1, RPE) %>% 
+  mutate(EPE_X1_scale = as.numeric(scale(EPE_X1, center = F)), 
+         EPE_Y1_scale = as.numeric(scale(EPE_Y1, center = F)), 
+         RPE_scale = as.numeric(scale(RPE, center = F)), 
+         EP_X1_scale = as.numeric(scale(EP_X1, center = F)), 
+         EP_Y1_scale = as.numeric(scale(EP_Y1, center = F)), 
+         RP_scale = as.numeric(scale(RP, center = F)), 
+         feedback_X1_scale = as.numeric(scale(feedback_X1, center = F)), 
+         feedback_Y1_scale = as.numeric(scale(feedback_Y1, center = F)), 
+         unfairness_norm = as.numeric(scale(unfairness)), 
+         reward_norm = as.numeric(scale(reward)))
+
+study2_reward_emotion <- study2_reward_emotion %>%
+  mutate(reward = (100 - offer)/100, # reward in dollars
+         RPE = reward - RP, 
+         RPE_scale = as.numeric(scale(RPE, center=F)), 
+         EPE_X1 = feedback_X1 - EP_X1, EPE_Y1 = feedback_Y1 - EP_Y1, 
+         EPE_X1_scale = as.numeric(scale(EPE_X1, center = F)), EPE_Y1_scale = as.numeric(scale(EPE_Y1, center = F)))
+
+study3_behavior <- study3_behavior
+
+study4_behavior_questionnaires <- study4_behavior %>% 
+    select(sub, trial, unfairness, RP, EP_X1, EP_Y1, feedback_X1, feedback_Y1, choice, reward, RPE, EPE_X1, EPE_Y1, 
+           cesDepress, tasLabel, shapsTotal, bis, aesTotal, tepsTotal) %>%
+    mutate(EPE_X1_scale = as.numeric(scale(EPE_X1, center = F)), 
+         EPE_Y1_scale = as.numeric(scale(EPE_Y1, center = F)), 
+         RPE_scale = as.numeric(scale(RPE, center = F)), 
+         EP_X1_scale = as.numeric(scale(EP_X1, center = F)), 
+         EP_Y1_scale = as.numeric(scale(EP_Y1, center = F)), 
+         RP_scale = as.numeric(scale(RP, center = F)), 
+         feedback_X1_scale = as.numeric(scale(feedback_X1, center = F)), 
+         feedback_Y1_scale = as.numeric(scale(feedback_Y1, center = F)), 
+         unfairness_norm = as.numeric(scale(unfairness)))
+
+study4_behavior <- study4_behavior %>%
+  select(sub, trial, unfairness, RP, EP_X1, EP_Y1, feedback_X1, feedback_Y1, choice, reward, RPE, EPE_X1, EPE_Y1, cesDepress) %>%
+    mutate(EPE_X1_scale = as.numeric(scale(EPE_X1, center = F)), 
+         EPE_Y1_scale = as.numeric(scale(EPE_Y1, center = F)), 
+         RPE_scale = as.numeric(scale(RPE, center = F)), 
+         EP_X1_scale = as.numeric(scale(EP_X1, center = F)), 
+         EP_Y1_scale = as.numeric(scale(EP_Y1, center = F)), 
+         RP_scale = as.numeric(scale(RP, center = F)), 
+         feedback_X1_scale = as.numeric(scale(feedback_X1, center = F)), 
+         feedback_Y1_scale = as.numeric(scale(feedback_Y1, center = F)), 
+         unfairness_norm = as.numeric(scale(unfairness)))
+```
+
+# Experiment 1: All Analyses
+
+## E1: Emotion Classification Task
+
+### Fig. S1: Emotion Classification Task 
+
+```{r fig_s1}
+# Reorder emotion list
+emotion_list <- c("neutral", "surprised", "aroused", "peppy", "enthusiastic", "happy", "satisfied", "relaxed", "calm", "sleepy", "still", "quiet", "sluggish", "sad", "disappointed", "disgusted", "annoyed", "angry", "afraid", "nervous")
+
+# Fig S1 A
+figS1a_data <- study1_emotion %>% mutate(emotion = fct_relevel(emotion, emotion_list))
+
+figS1a_plot <- ggplot(figS1a_data, aes(x = X1, y = Y1, color = emotion)) + 
+  geom_point(size = 1, alpha = .5) + 
+  scale_x_continuous(name = "Valence", limits = c(-250, 250)) + 
+  scale_y_continuous(name = "Arousal", limits = c(-250, 250)) + 
+  scale_color_discrete(name = "Exclude") +
+  #geom_hline(yintercept = 0) + 
+  #geom_vline(xintercept = 0) +
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                     text = element_text(size = 14),
+                     aspect.ratio = 1, legend.position = "none") # remove legend
+
+# Fig S1 B
+figS1b_data <- study1_emotion %>%
+  filter(exclude == "keep") %>%
+  mutate(emotion = fct_relevel(emotion, emotion_list)) %>%
+  group_by(emotion) %>%
+  dplyr::summarise(Mean_X = mean(X1), Mean_Y = mean(Y1), 
+                   SD_X = sd(X1), SD_Y = sd(Y1), N = n(), 
+                   SE_X = SD_X / sqrt(N), SE_Y = SD_Y / sqrt(N)) %>%
+  mutate(CI.lower_X = Mean_X - qt(1 - (0.05 / 2), N - 1) * SE_X,
+         CI.upper_X = Mean_X + qt(1 - (0.05 / 2), N - 1) * SE_X, 
+         CI.lower_Y = Mean_Y - qt(1 - (0.05 / 2), N - 1) * SE_Y,
+         CI.upper_Y = Mean_Y + qt(1 - (0.05 / 2), N - 1) * SE_Y)
+
+figS1b_plot <- ggplot(figS1b_data, aes(x = Mean_X, y = Mean_Y, color = emotion)) + 
+  geom_point(size = 1) + 
+  geom_errorbar(aes(ymax = CI.upper_Y, ymin = CI.lower_Y)) +
+  geom_errorbarh(aes(xmax = CI.upper_X, xmin = CI.lower_X)) +
+  ggrepel::geom_text_repel(aes(label = emotion), segment.colour = NA, force = 10, show.legend = FALSE, size = 4.2) +
+  # Add all raw data points very transparent
+  geom_point(data = figS1a_data, aes(x = X1, y = Y1, color = emotion), size = 1, alpha = .05) + 
+  scale_x_continuous(name = "Valence", limits = c(-250, 250)) + 
+  scale_y_continuous(name = "Arousal", limits = c(-250, 250)) + 
+  scale_color_discrete(name = "Exclude") +
+  geom_hline(yintercept = 0) + 
+  geom_vline(xintercept = 0) +
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                     text = element_text(size = 14),
+                     aspect.ratio = 1, legend.position = "none") # remove legend
+
+# Fig S1 Combined
+figS1_plot <- cowplot::plot_grid(figS1a_plot, figS1b_plot, labels = c("A", "B"), label_size = 18) 
+figS1_plot
+ggsave(filename = paste0(dir_graphs, "/supplement/experiment1/figS1.pdf"), plot=figS1_plot, width = 6.5, height = 4, useDingbats = F)
+```
+
+### Fig. S2: Example participant's circumplex and emotion range
+
+```{r fig_s2}
+#### Circumplex fit radius
+# Function requires only 1 subject's emotion classification data
+circumplex_fit <- function(df) {
+  
+  # Define center for subject using neutral
+  centerX <- df$X1[df$emotion == "neutral"]
+  centerY <- df$Y1[df$emotion == "neutral"]
+  
+  # calculate
+  df$distance <- sqrt((df$X1 - centerX)^2 + (df$Y1 - centerY)^2)
+  df$angle_rad <- atan2(df$Y1, df$X1) # R returns radians
+  df$angle_deg <- df$angle_rad * 180/pi # Angle degree = rad * 180 / pi
+  df$centerX <- centerX
+  df$centerY <- centerY
+  
+  # Find mean "radius" which we'll use for the circumplex
+  Mean_Dist <- df %>% 
+    filter(emotion != "neutral") %>% # don't want our center influencing the average
+    dplyr::summarise(Mean_Dist = mean(distance)) %>%
+    pull(Mean_Dist)
+
+  return(Mean_Dist)
+}
+
+# Fit circumplex and pull out radius per subject
+study1_emotion_fits <- study1_emotion %>% 
+  nest(data = -sub) %>% 
+  group_by(sub) %>% 
+  mutate(radius = map(data, circumplex_fit)) %>% # returns tibble of 3 pieces of information
+  unnest(cols = c(data, radius))
+
+#### Fig. S2 Plot
+figS2a_data <- study1_emotion_fits %>% filter(exclude == "keep") %>% filter(sub == 1) # example subject
+
+# Define center for subject using neutral
+centerX <- figS2a_data$X1[figS2a_data$emotion == "neutral"]
+centerY <- figS2a_data$Y1[figS2a_data$emotion == "neutral"]
+
+# calculate
+figS2a_data$distance <- sqrt((figS2a_data$X1 - centerX)^2 + (figS2a_data$Y1 - centerY)^2)
+figS2a_data$angle_rad <- atan2(figS2a_data$Y1, figS2a_data$X1) # R returns radians
+figS2a_data$angle_deg <- figS2a_data$angle_rad * 180/pi # Angle degree = rad * 180 / pi
+figS2a_data$centerX <- centerX
+figS2a_data$centerY <- centerY
+
+# Find mean "radius" which we'll use for the circumplex
+figS2a_data$radius <- figS2a_data %>% 
+  filter(emotion != "neutral") %>% # don't want our center influencing the average
+  dplyr::summarise(Mean_Dist = mean(distance)) %>%
+  pull(Mean_Dist)
+
+figS2a_plot <- ggplot(figS2a_data) + 
+  geom_point(aes(x = X1, y = Y1, color = emotion), size = 1) +
+  ggforce::geom_circle(aes(x0 = centerX, y0 = centerY, r = radius)) +
+  geom_spoke(aes(x = centerX, y = centerY, angle = angle_rad, radius = distance, color = emotion), alpha = .2) +
+  geom_text_repel(aes(x = X1, y = Y1, color = emotion, label = emotion), segment.colour = NA, force = 10, show.legend = FALSE) +
+  geom_hline(yintercept = 0) + 
+  geom_vline(xintercept = 0) + 
+  scale_x_continuous(name = "Valence", limits = c(-300, 300), breaks = c(-200, -100, 0, 100, 200)) +
+  scale_y_continuous(name = "Arousal", limits = c(-300, 300), breaks = c(-200, -100, 0, 100, 200)) +
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                     text = element_text(size = 14),
+                     aspect.ratio = 1, legend.position = "none") # remove legend
+figS2a_plot
+
+## Fig S2b - Individual diff histogram 
+figS2b_data <- study1_emotion_fits %>% filter(exclude == "keep") %>% dplyr::select(sub, radius) %>% unique()
+
+# Test for normal distribution
+#shapiro.test(figS2b_data$radius)
+
+# Histogram 
+figS2b_plot <- ggplot(figS2b_data, aes(x = radius)) + 
+   geom_histogram(aes(),      # Histogram with density instead of count on y-axis
+                 binwidth=10,
+                 colour="black", fill="white") +
+  stat_function(# creates a normal distribution with mean of W parameter and sd!
+    fun = function(x, mean, sd, n, bw){ 
+      dnorm(x = x, mean = mean, sd = sd) * n * bw
+    }, 
+    args = c(mean = mean(figS2b_data$radius), 
+             sd = sd(figS2b_data$radius), 
+             n = length(figS2b_data$radius), 
+             bw = 10), color = "blue", size = 1) +
+  geom_vline(xintercept = mean(figS2b_data$radius), colour = "blue", linetype = "dashed") +
+  scale_x_continuous(breaks = c(50, 100, 150, 200, 250, 300), name = "Radius") +
+  scale_y_continuous(name = "Count") +
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                     text = element_text(size = 14),
+                     aspect.ratio = 1, legend.position = "none") # remove legend
+figS2b_plot
+
+# Combine
+figS2_plot <- cowplot::plot_grid(figS2a_plot, figS2b_plot, labels = c("A", "B"), label_size = 18)
+figS2_plot
+ggsave(filename = paste0(dir_graphs, "/supplement/experiment1/figS2.pdf"), plot=figS2_plot, width = 6.5, height = 4, useDingbats = F)
+```
+
+## E1: Ultimatum Game
+
+### Table S1: Third-parties and responders treat unfairness similarly
+
+```{r table_s1}
+tableS1_data <- study1_behavior
+
+# Unfairness analysis
+tableS1 <- glmer(choice ~ unfairness_norm*role + (1 + unfairness_norm|sub), 
+            data = tableS1_data,
+            family = binomial, 
+            control=glmerControl(optimizer='bobyqa', 
+                                optCtrl=list(maxfun=2e5)))
+
+tab_model(tableS1, transform = NULL, title = "Experiment 1: Third-parties and responders treat unfairness similarly", 
+          pred.labels = c("Intercept", "Unfairness", "Role [Responder]", "Unfairness:Role [Responder]"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+          CSS = css_theme("regression"), file = paste0(dir_graphs, "/supplement/experiment1/tableS1.html"))
+```
+
+### Table S2: Third-parties and responders treat prediction errors similarly
+
+```{r table_s2}
+tableS2_data <- study1_behavior
+
+tableS2 <- glmer(choice ~ EPE_X1_scale*role + EPE_Y1_scale*role + RPE_scale*role + (1 +  EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
+            data = tableS2_data,
+            family = binomial, 
+            control=glmerControl(optimizer='bobyqa', 
+                                optCtrl=list(maxfun=2e5)))
+
+tab_model(tableS2, transform = NULL, title = "Experiment 1: Third-parties and responders treat prediction errors similarly", 
+          pred.labels = c("Intercept", "Valence PE", "Role [Responder]", "Arousal PE", "Reward PE", 
+                          "Valence PE:Role [Responder]", "Arousal PE:Role [Responder]", "Reward PE:Role [Responder]"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+          CSS = css_theme("regression"), file = paste0(dir_graphs, "/supplement/experiment1/tableS2.html"))
+```
+
+### Fig. S3 and Table S3: Non-parametric regression of prediction errors
+
+```{r fig_S3_table_s3}
+## Table S3
+tableS3_data <- study1_behavior %>% mutate(sub = factor(sub))
+
+# Study 1
+tableS3 <- mgcv::gamm(choice ~ s(EPE_X1_scale) + s(EPE_Y1_scale) + s(RPE_scale),
+                  data = tableS3_data, 
+                  family=binomial(link="logit"), 
+                  random = list(sub = ~1))
+
+tab_model(tableS3$gam, transform = NULL, title = "Experiment 1: Non-parametric regression of prediction errors", 
+          rm.terms = "(Intercept)", 
+          pred.labels = c("s(Valence PE)", "s(Arousal PE)", "s(Reward PE)"),
+          dv.labels = c("Estimates"), string.est = "Effective DF", string.stat = "F",
+          show.se = FALSE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+          CSS = css_theme("regression"), file = paste0(dir_graphs, "/supplement/experiment1/tableS3.html"))
+
+## Fig. S3
+# Transformations
+tableS3_transforms <- plot(tableS3$gam, pages = 1, seWithMean = TRUE)
+tableS3_valence <- as.data.frame(tableS3_transforms[[1]][c('x','se','fit')]) %>%
+  mutate(pe_type = "valence pe")
+tableS3_arousal <- as.data.frame(tableS3_transforms[[2]][c('x','se','fit')]) %>%
+  mutate(pe_type = "arousal pe")
+tableS3_reward <- as.data.frame(tableS3_transforms[[3]][c('x','se','fit')]) %>%
+  mutate(pe_type = "reward pe")
+
+figS3_data <- bind_rows(tableS3_valence, tableS3_arousal, tableS3_reward)
+
+figS3a_plot <- ggplot(data = figS3_data, aes(x = x, y = fit)) +
+  geom_ribbon(aes(x = x, ymin = fit - se, ymax = fit + se), alpha = 0.2) +
+  geom_line() + 
+  xlab("PE") + ylab("s(PE)") + 
+  facet_wrap(~pe_type) + 
+  geom_vline(xintercept = 0, lty = 3) + 
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                     text = element_text(size = 14), title = element_text(size = 20))
+
+# Predict
+xRange1 <- with(tableS3_data, seq(round(min(EPE_X1_scale, na.rm=T), 1), round(max(EPE_X1_scale, na.rm=T), 1), by = .1))
+xRange2 <- with(tableS3_data, seq(round(min(EPE_Y1_scale, na.rm=T), 1), round(max(EPE_Y1_scale, na.rm=T), 1), by = .1))
+xRange3 <- with(tableS3_data, seq(round(min(RPE_scale, na.rm=T), 1), round(max(RPE_scale, na.rm=T), 1), by = .1))
+
+predict1 <- with(tableS3_data, expand.grid(EPE_X1_scale=xRange1, EPE_Y1_scale=0, RPE_scale = 0))
+predict2 <- with(tableS3_data, expand.grid(EPE_X1_scale=0, EPE_Y1_scale=xRange2, RPE_scale = 0))
+predict3 <- with(tableS3_data, expand.grid(EPE_X1_scale=0, EPE_Y1_scale=0, RPE_scale = xRange3))
+
+predictedInterval1 <- as.data.frame(predict(tableS3$gam, newdata=predict1, type="response", se = TRUE))
+predictedInterval2 <- as.data.frame(predict(tableS3$gam, newdata=predict2, type="response", se = TRUE))
+predictedInterval3 <- as.data.frame(predict(tableS3$gam, newdata=predict3, type="response", se = TRUE))
+
+plot_data1 <- bind_cols(predict1, predictedInterval1)
+plot_data2 <- bind_cols(predict2, predictedInterval2)
+plot_data3 <- bind_cols(predict3, predictedInterval3)
+
+# Plot
+figS3b_plot <- ggplot() + 
+  # Valence
+  geom_line(data = plot_data1, aes(x = EPE_X1_scale, y = fit, color = "Valence PE"), size = 1.5) + 
+  geom_ribbon(data = plot_data1, aes(x = EPE_X1_scale, ymax = fit + se.fit, ymin = fit - se.fit, fill = "Valence PE"), alpha = .2) + 
+  # Arousal
+  geom_line(data = plot_data2, aes(x = EPE_Y1_scale, y = fit, color = "Arousal PE"), size = 1.5) + 
+  geom_ribbon(data = plot_data2, aes(x = EPE_Y1_scale, ymax = fit + se.fit, ymin = fit - se.fit, fill = "Arousal PE"), alpha = .2) + 
+  # Reward
+  geom_line(data = plot_data3, aes(x = RPE_scale, y = fit, color = "Reward PE"), size = 1.5) + 
+  geom_ribbon(data = plot_data3, aes(x = RPE_scale, ymax = fit + se.fit, ymin = fit - se.fit, fill = "Reward PE"), alpha = .2) + 
+  scale_color_manual(name = "Color", values = c("#E02029", "#1B954C", "#397FBA")) + # arousal, valence, reward order
+  scale_fill_manual(name = "Color", values = c("#E02029", "#1B954C", "#397FBA")) + 
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), name = "p(Reject)") +
+  scale_x_continuous(limits = c(-5, 5), name = "Prediction Error") +
+  geom_vline(xintercept = 0, lty = 3) + 
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                     text = element_text(size = 14), title = element_text(size = 20))
+figS3b_plot
+
+# Combine
+figS3_plot <- cowplot::plot_grid(figS3a_plot, figS3b_plot, labels = c("A", "B"), nrow = 2)
+figS3_plot
+ggsave(filename = paste0(dir_graphs, "/supplement/experiment1/figS3.pdf"), plot=figS3_plot, width = 8, height = 6, useDingbats = F)
+```
+
+### Table S4: Interactions between prediction errors
+
+```{r table_s4}
+## Table S4
+tableS4_data <- study1_behavior
+
+tableS4 <- glmer(choice ~ EPE_X1_scale*EPE_Y1_scale*RPE_scale + (1 + EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
+                data = tableS4_data,
+                family=binomial(link="logit"),
+                control=glmerControl(optimizer="bobyqa",
+                                     optCtrl=list(maxfun=2e5)))
+
+tab_model(tableS4, transform = NULL, title = "Experiment 1: Interactions between prediction errors", 
+          pred.labels = c("Intercept", "Valence PE", "Arousal PE", "Reward PE", 
+                          "Valence PE:Arousal PE", "Valence PE:Reward PE", "Arousal PE:Reward PE", 
+                          "Valence PE:Arousal PE:Reward PE"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+          CSS = css_theme("regression"), file = paste0(dir_graphs, "/supplement/experiment1/tableS4.html"))
+
+## Model Comparison
+tableS4b <- glmer(choice ~ EPE_X1_scale+EPE_Y1_scale+RPE_scale + (1 + EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
+                data = tableS4_data,
+                family=binomial(link="logit"),
+                control=glmerControl(optimizer="bobyqa",
+                                     optCtrl=list(maxfun=2e5)))
+anova(tableS4b, tableS4)
+```
+
+### Table S5: Expectations and prediction errors independently explain punitive choices
+
+```{r table_s5}
+tableS5_data <- study1_behavior
+
+tableS5 <- glmer(choice ~ EP_X1_scale + EP_Y1_scale + RP_scale + EPE_X1_scale + EPE_Y1_scale + RPE_scale + 
+                   (1 + EPE_X1_scale + EPE_Y1_scale + RPE_scale | sub), 
+                 data = tableS5_data, 
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+tab_model(tableS5, transform = NULL, title = "Experiment 1: Expectations and prediction errors independently explain punitive choices", 
+          pred.labels = c("Intercept", "Valence Expectation", "Arousal Expectation", "Reward Expectation", 
+                          "Valence PE", "Arousal PE", "Reward PE"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+          CSS = css_theme("regression"), file = paste0(dir_graphs, "/supplement/experiment1/tableS5.html"))
+
+car::vif(tableS5)
+rmcorr::rmcorr(sub, EP_X1_scale, EPE_X1_scale, data = tableS5_data)
+rmcorr::rmcorr(sub, EP_Y1_scale, EPE_Y1_scale, data = tableS5_data)
+rmcorr::rmcorr(sub, RP_scale, RPE_scale, data = tableS5_data)
+
+```
+
+### Table S6: Experienced reward predicts decisions to punish better than experienced valence or arousal
+
+```{r table_s6}
+tableS6_data <- study1_behavior 
+
+tableS6 <- glmer(choice ~ feedback_X1_scale + feedback_Y1_scale + reward_norm + (1 + reward_norm|sub), 
+            data = tableS6_data,
+            family = binomial, 
+            control=glmerControl(optimizer='bobyqa', 
+                                optCtrl=list(maxfun=2e5))) 
+
+tab_model(tableS6, transform = NULL, title = "Experiment 1: Experienced reward predicts decisions to punish better than experienced valence or arousal", 
+          pred.labels = c("Intercept", "Experienced Valence", "Experienced Arousal", "Experienced Reward"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+           CSS = css_theme("regression"), file = paste0(dir_graphs, "/supplement/experiment1/tableS6.html"))
+```
+
+### Expectation and Prediction Error Model Comparisons
+
+```{r table_s6}
+tableS7_data <- study1_behavior 
+
+## Reward only
+table7a <- glmer(choice ~ RP_scale + RPE_scale + (1 + RPE_scale|sub), 
+                 data = tableS7_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+## Reward and Valence
+table7b <- glmer(choice ~ EP_X1_scale + RP_scale + EPE_X1_scale + RPE_scale + (1 + RPE_scale|sub), 
+                 data = tableS7_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+## Reward, Valence, and Arousal 
+table7c <- glmer(choice ~ EP_X1_scale + EP_Y1_scale + RP_scale + EPE_X1_scale + EPE_Y1_scale + RPE_scale + (1 + RPE_scale|sub), 
+                 data = tableS7_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+anova(table7a, table7b)
+anova(table7b, table7c)
+```
+
+### Table S7: Controlling for Expectations in the Interactive Model
+
+```{r table_s6}
+tableS7_data <- study1_behavior 
+
+## Interactions
+tableS7a <- glmer(choice ~ EPE_X1_scale*EPE_Y1_scale*RPE_scale + (1 + RPE_scale|sub), 
+                 data = tableS7_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+## Expectations + Interactions
+tableS7b <- glmer(choice ~ EP_X1_scale + EP_Y1_scale + RP_scale + EPE_X1_scale*EPE_Y1_scale*RPE_scale + (1 + RPE_scale|sub), 
+                 data = tableS7_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+anova(tableS7a, tableS7b)
+
+tab_model(tableS7b, transform = NULL, title = "Experiment 1: Controlling for Expectations in the Interactive Model", 
+          pred.labels = c("Intercept", "Valence Expectations", "Arousal Expectations", "Reward Expectations", 
+                          "Valence PE", "Arousal PE", "Reward PE", "Valence PE: Arousal PE", "Valence PE: Reward PE", "Arousal PE: Reward PE", "Valence PE: Arousal PE: Reward PE"),
+          dv.labels = c("Estimates"),
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+           CSS = css_theme("regression"), file = paste0(dir_graphs, "/supplement/experiment1/tableS7.html"))
+```
+
+## E1: Computational Modeling
+
+### Figure S4 and Table S8 - Model Comparison
+
+```{r fig_s4_table_s8}
+dir_ug_models <- str_c(dir_data, "/study1_ug/oscar/model_comparison/")
+
+bic <- function(ll, N, k) { -2 * ll + log(N) * k }    # -2 * LL + log(N) * k
+
+# Load   
+df_m1a <- read_csv(str_c(dir_ug_models, "study1_m1a.csv")) %>% 
+  select(sub, m1a_ll = log_lik, soft_beta = beta, w1) %>% 
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2))
+df_m1b <- read_csv(str_c(dir_ug_models, "study1_m1b.csv")) %>% 
+  select(sub, m1b_ll = log_lik, soft_beta = beta, w1, w2) %>% 
+  mutate(m1b_bic = bic(ll = m1b_ll, N = 20, k = 3))
+df_m1c <- read_csv(str_c(dir_ug_models, "study1_m1c.csv")) %>% 
+  select(sub, m1c_ll = log_lik, soft_beta = beta, w1, w2, w3) %>% 
+  mutate(m1c_bic = bic(ll = m1c_ll, N = 20, k = 4))
+df_m2a <- read_csv(str_c(dir_ug_models, "study1_m2a.csv")) %>% 
+  select(sub, m2a_ll = log_lik, soft_beta = beta, pt_beta, w1) %>% 
+  mutate(m2a_bic = bic(ll = m2a_ll, N = 20, k = 3))
+df_m2b <- read_csv(str_c(dir_ug_models, "study1_m2b.csv")) %>% 
+  select(sub, m2b_ll = log_lik, soft_beta = beta, pt_beta, w1, w2) %>% 
+  mutate(m2b_bic = bic(ll = m2b_ll, N = 20, k = 4))
+df_m2c <- read_csv(str_c(dir_ug_models, "study1_m2c.csv")) %>% 
+  select(sub, m2c_ll = log_lik, soft_beta = beta, pt_beta, w1, w2, w3) %>% 
+  mutate(m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+# Exclusion 
+study1_emotion <- read_csv(str_c(dir_ug_models, "study1_ec.csv"))
+
+study1_check <- study1_emotion %>% filter(emotion == "neutral") %>% 
+  mutate(exclude = if_else(between(X1, -50, 50) & between(Y1, -50, 50), "keep", "remove"), 
+         study = "study1") %>% select(sub, exclude)
+
+## Create table
+tableS8 <- df_m1a %>% left_join(., study1_check, by = "sub") %>% filter(exclude == "keep") %>%
+  summarise(bic = mean(m1a_bic), bic_sd = sd(m1a_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m1a") %>% 
+  bind_rows(df_m1b %>% left_join(., study1_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m1b_bic), bic_sd = sd(m1b_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m1b")) %>% 
+    bind_rows(df_m1c %>% left_join(., study1_check, by = "sub") %>% filter(exclude == "keep") %>%
+                summarise(bic = mean(m1c_bic), bic_sd = sd(m1c_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m1c")) %>% 
+  bind_rows(df_m2a %>% left_join(., study1_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m2a_bic), bic_sd = sd(m2a_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m2a")) %>% 
+  bind_rows(df_m2b %>% left_join(., study1_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m2b_bic), bic_sd = sd(m2b_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m2b")) %>% 
+  bind_rows(df_m2c %>% left_join(., study1_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m2c_bic), bic_sd = sd(m2c_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m2c")) %>%
+  mutate(delta = bic - min(bic)) %>% 
+  mutate_if(is.numeric, round, 2)
+
+
+## Figure S4
+figS4a_data <- df_m1a %>%
+  select(sub, contains("m1a_")) %>% 
+  left_join(df_m1b %>% select(sub, contains("m1b_")), by = "sub") %>%
+  left_join(df_m1c %>% select(sub, contains("m1c_")), by = "sub") %>%
+  left_join(df_m2a %>% select(sub, contains("m2a_")), by = "sub") %>%
+  left_join(df_m2b %>% select(sub, contains("m2b_")), by = "sub") %>%
+  left_join(df_m2c %>% select(sub, contains("m2c_")), by = "sub") %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "model", values_to = "bic") %>%
+  mutate(model = case_when(model == "m1a_bic" ~ "m1a", 
+                           model == "m1b_bic" ~ "m1b", 
+                           model == "m1c_bic" ~ "m1c", 
+                           model == "m2a_bic" ~ "m2a", 
+                           model == "m2b_bic" ~ "m2b", 
+                           model == "m2c_bic" ~ "m2c")) %>%
+  left_join(., study1_check %>% select(sub, exclude), by = "sub") %>%
+  filter(exclude == "keep")
+
+figS4_data <- figS4a_data %>%
+  group_by(model) %>%
+  summarise(Mean = mean(bic), SD = sd(bic), N = n(), SE = SD / sqrt(N)) %>%
+  mutate_if(is.numeric, round, 2)
+
+figS4_plot <- ggplot() + 
+  geom_col(data = figS4_data, aes(x = model, y = Mean), fill = "white", color = "red") + 
+  geom_errorbar(data = figS4_data, aes(x = model, y = Mean, ymin = Mean - SE, ymax = Mean + SE), width = .1, color = "red") + 
+  ggbeeswarm::geom_quasirandom(data = figS4a_data, aes(x = model, y = bic), method = "pseudorandom", alpha = .6) + 
+  # Annotate
+  ylab("BIC") + 
+  xlab("Model") + 
+  theme_classic() + 
+  theme(text = element_text(size = 15))
+figS4_plot
+ggsave(filename = str_c(dir_graphs, "/supplement/experiment1/figS4.pdf"), width = 6, height = 4)
+
+## Significance
+figS4a_test <- figS4a_data %>%
+  filter(model %in% c("m2a", "m1a")) # change models accordingly
+t.test(figS4a_test$bic[figS4a_test$model == "m1a"], figS4a_test$bic[figS4a_test$model == "m2a"], paired = T)
+
+figS4a_test <- figS4a_data %>%
+  filter(model %in% c("m1a", "m1b")) # change models accordingly
+t.test(figS4a_test$bic[figS4a_test$model == "m1b"], figS4a_test$bic[figS4a_test$model == "m1a"], paired = T)
+
+figS4a_test <- figS4a_data %>%
+  filter(model %in% c("m2b", "m2a")) # change models accordingly
+t.test(figS4a_test$bic[figS4a_test$model == "m2b"], figS4a_test$bic[figS4a_test$model == "m2a"], paired = T)
+
+figS4a_test <- figS4a_data %>%
+  filter(model %in% c("m1c", "m1b")) # change models accordingly
+t.test(figS4a_test$bic[figS4a_test$model == "m1c"], figS4a_test$bic[figS4a_test$model == "m1b"], paired = T)
+
+figS4a_test <- figS4a_data %>%
+  filter(model %in% c("m2b", "m2c")) # change models accordingly
+t.test(figS4a_test$bic[figS4a_test$model == "m2c"], figS4a_test$bic[figS4a_test$model == "m2b"], paired = T)
+
+figS4a_test <- figS4a_data %>%
+  filter(model %in% c("m2c", "m1c")) # change models accordingly
+t.test(figS4a_test$bic[figS4a_test$model == "m1c"], figS4a_test$bic[figS4a_test$model == "m2c"], paired = T)
+
+figS4a_test <- figS4a_data %>%
+  filter(model %in% c("m1c", "m2c")) # change models accordingly
+t.test(figS4a_test$bic[figS4a_test$model == "m1c"], figS4a_test$bic[figS4a_test$model == "m2c"], paired = T)
+
+## Percentage best fit by m1c vs m1b
+figS4a_data %>%
+  filter(model %in% c("m1b", "m1c")) %>%
+  select(sub, model, bic) %>%
+  pivot_wider(names_from = model, values_from = bic) %>%
+  mutate(best = case_when(m1b < m1c ~ "m1b", 
+                          m1b == m1c ~ "equal", 
+                          m1b > m1c ~ "m1c")) %>%
+  group_by(best) %>% 
+  tally()
+```
+
+### Figure S5 - Parameter Recovery
+
+```{r figS5}
+df_m1b_p <- read_csv(file = str_c(dir_data, "/study1_ug/oscar/param_recovery/study1_m1b_prior.csv")) %>% select(-X1)
+
+# Recovery 
+df_param <- read_csv(str_c(dir_data, "/study1_ug/oscar/param_recovery/study1_m1b_param_prior.csv")) %>% 
+  select(-X1, -log_lik) %>%
+  pivot_longer(cols = -sub, names_to = "params", values_to = "recovered") %>% 
+  left_join(., study1_check %>% select(sub, exclude), by = "sub") %>%
+  filter(exclude == "keep") %>% select(-exclude)
+
+figS5_data <- df_param %>%
+  left_join(df_m1b_p %>% select(sub, beta, w1, w2) %>% pivot_longer(cols = -sub, names_to = "params", values_to = "original"), by = c("sub", "params")) %>%
+  mutate(params = case_when(params == "beta" ~ "inverse temp", 
+                            params == "w1" ~ "w1 - RPE", 
+                            params == "w2" ~ "w2 - VPE"))
+
+# Correlations
+beta_r <- cor.test(figS5_data$original[figS5_data$params == "inverse temp"], figS5_data$recovered[figS5_data$params == "inverse temp"], method = "spearman")
+w1_r <- cor.test(figS5_data$original[figS5_data$params == "w1 - RPE"], figS5_data$recovered[figS5_data$params == "w1 - RPE"], method = "spearman")
+w2_r <- cor.test(figS5_data$original[figS5_data$params == "w2 - VPE"], figS5_data$recovered[figS5_data$params == "w2 - VPE"], method = "spearman")
+
+figS5_plot <- ggplot(figS5_data, aes(x = original, y = recovered)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = F, aes(color = "red")) + 
+  geom_abline(aes(color = "blue", slope = 1, intercept = 0)) + 
+  scale_color_identity(name = "Model fit",
+                       breaks = c("blue", "red"),
+                       labels = c("Ideal", "Empirical"),
+                       guide = "legend") + 
+  facet_wrap(~params, scales = "free") +
+  xlab("Fit") + 
+  ylab("Recovery") + 
+  theme_classic() + 
+  theme(aspect.ratio = 1, text = element_text(size = 15))
+figS5_plot
+
+ggsave(str_c(dir_graphs, "/supplement/experiment1/figS5.pdf"), plot = figS5_plot, width = 10, height = 10)
+```
+
+### Figure S6 - Model Identifiability 
+
+```{r figS6}
+df_m1a_sim <- read_csv(str_c(dir_data, "/study1_ug/oscar/model_identify/study1_m1a_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m1b_sim <- read_csv(str_c(dir_data, "/study1_ug/oscar/model_identify/study1_m1b_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m1c_sim <- read_csv(str_c(dir_data, "/study1_ug/oscar/model_identify/study1_m1c_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m2a_sim <- read_csv(str_c(dir_data, "/study1_ug/oscar/model_identify/study1_m2a_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m2b_sim <- read_csv(str_c(dir_data, "/study1_ug/oscar/model_identify/study1_m2b_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m2c_sim <- read_csv(str_c(dir_data, "/study1_ug/oscar/model_identify/study1_m2c_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+# Find best
+df_m1a <- df_m1a_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m1a", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+df_m1b <- df_m1b_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m1b", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq) %>%
+  bind_rows(data.frame(fit_model = "m2a", sim_model = "m1b", freq = 0))
+  
+df_m1c <- df_m1c_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m1c", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+df_m2a <- df_m2a_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m2a", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+df_m2b <- df_m2b_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m2b", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+df_m2c <- df_m2c_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m2c", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+# Create confusion matrix
+figS6_data <- df_m1a %>%
+  bind_rows(df_m1b) %>%
+  bind_rows(df_m1c) %>%
+  bind_rows(df_m2a) %>%
+  bind_rows(df_m2b) %>%
+  bind_rows(df_m2c)
+
+figS6_plot <- ggplot(figS6_data, aes(x = fit_model, y = sim_model, fill = freq)) + 
+  geom_tile() + 
+  geom_text(aes(label=round(freq, 2)), color = "white") +
+  coord_fixed() + 
+  scale_fill_gradient2(low = "#343086", mid = "#4DBD92", midpoint = .5, high = "#F3EA22", limits = c(0, 1)) + 
+  theme_classic() 
+figS6_plot
+
+ggsave(filename = str_c(dir_graphs, "/supplement/experiment1/figS6.pdf"), figS6_plot, width = 6, height = 6)
+```
+
+# Experiment 2: All Analyses
+
+## E2: Ultimatum Game
+
+### Fig. S7 and Table S9
+
+```{r fig_S7_table_S9}
+tableS9_data <- study2_reward_emotion %>% # start with reward-emotion
+  select(sub, trial, block, offer, choice, choice_RT, RP, RP_RT, condition, exclude) %>%
+  # Add on reward-only
+  bind_rows(study2_reward_only %>% 
+              select(sub, trial, block, offer, choice, choice_RT, RP, RP_RT, condition, exclude)) %>%
+  # Create variables 
+  mutate(reward = (100 - offer)/100, # reward in dollars
+         RPE = reward - RP, 
+         RPE_scale = as.numeric(scale(RPE, center=F)), 
+         block_label = as.factor(case_when(block == "re" ~ "reward_emotion", 
+                                           block == "r" ~ "reward_only")), 
+         block_binary = case_when(block_label == "reward_only" ~ 0, 
+                                  block_label == "reward_emotion" ~ 1))
+
+tableS9 <- glmer(choice ~ RPE_scale*block_binary + (1 + RPE_scale|sub), 
+                 data = tableS9_data, 
+                 family = binomial,
+                 control = glmerControl(optimizer = "bobyqa"))
+
+tab_model(tableS9, transform = NULL, title = "Experiment 2: RPEs do not differ by block",
+          pred.labels = c("Intercept", "Reward PE", "Block", "Reward PE:Block"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+          CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment2/tableS9.html"))
+
+# Graph
+xRange1 <- with(tableS9_data, seq(round(min(RPE_scale, na.rm=T), 1), round(max(RPE_scale, na.rm=T), 1), by = .1))
+xRange2 <- with(tableS9_data, unique(block_binary))
+
+predict_data <- with(tableS9_data, expand.grid(RPE_scale=xRange1, block_binary=xRange2))
+predict_fits <- data.frame(AICcmodavg::predictSE(tableS9, newdata=predict_data, type="response", print.matrix=T))
+
+plot_data1 <- bind_cols(predict_data, predict_fits) %>%
+  mutate(block_label = case_when(block_binary == 0 ~ "reward_only", 
+                                 block_binary == 1 ~ "reward_emotion"))
+
+# Graph
+figS7_plot <- ggplot(data = plot_data1, aes(x = RPE_scale, y = fit, color = block_label)) + 
+  geom_line(size = 1) + 
+  geom_ribbon(aes(ymin = fit - se.fit, ymax = fit + se.fit, fill = block_label, color = NULL), alpha = .2) + 
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1), name = "p(Reject)") +
+  scale_x_continuous(limits = c(min(xRange1), max(xRange1)), name = "Reward PEs (Standardized)") +
+  theme_minimal() + 
+  geom_vline(xintercept = 0, lty = 3) + 
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                     text = element_text(size = 14), title = element_text(size = 20))
+figS7_plot
+ggsave(filename = paste0(dir_graphs, "/supplement/experiment2/figS7.pdf"), plot=figS7_plot, width = 8, height = 6, useDingbats = F)
+```
+
+### Table S10
+
+```{r table_S10}
+tableS10_data <- study2_reward_emotion %>% # start with reward-emotion
+  select(sub, trial, block, offer, choice, choice_RT, RP, RP_RT, condition, exclude) %>%
+  # Add on reward-only
+  bind_rows(study2_reward_only %>% 
+              select(sub, trial, block, offer, choice, choice_RT, RP, RP_RT, condition, exclude)) %>%
+  # Create variables 
+  mutate(reward = (100 - offer)/100, # reward in dollars
+         RPE = reward - RP, 
+         RPE_scale = as.numeric(scale(RPE, center=F)), 
+         block_label = as.factor(case_when(block == "re" ~ "reward_emotion", 
+                                           block == "r" ~ "reward_only"))) %>% 
+  mutate(order = as.factor(case_when((condition == "re_r_order") & (block_label == "reward_emotion") ~ "first", 
+                                     (condition == "re_r_order") & (block_label == "reward_only") ~ "second", 
+                                     (condition == "r_re_order") & (block_label == "reward_only") ~ "first", 
+                                     (condition == "r_re_order") & (block_label == "reward_emotion") ~ "second"))) %>%
+  mutate(order_binary = case_when(order == "first" ~ 0, 
+                                  order == "second" ~ 1))
+
+
+tableS10 <- glmer(choice ~ RPE_scale*order_binary + (1 + RPE_scale|sub), 
+                 data = tableS10_data, 
+                 family = binomial,
+                 control = glmerControl(optimizer = "bobyqa"))
+
+tab_model(tableS10, transform = NULL, title = "Experiment 2: Reliance on Reward PEs increases over time",
+          pred.labels = c("Intercept", "Reward PE", "Block Order [second]", "Reward PE:Block Order [second]"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+          CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment2/tableS10.html"))
+```
+
+### Table S11
+
+```{r table_S11}
+tableS11_base <- study2_reward_emotion %>% # start with reward-emotion
+  select(sub, trial, block, offer, choice, choice_RT, RP, RP_RT, condition, exclude) %>%
+  # Add on reward-only
+  bind_rows(study2_reward_only %>% 
+              select(sub, trial, block, offer, choice, choice_RT, RP, RP_RT, condition, exclude)) %>%
+  # Create variables 
+  mutate(reward = (100 - offer)/100, # reward in dollars
+         RPE = reward - RP, 
+         RPE_scale = as.numeric(scale(RPE, center=F)), 
+         block_label = as.factor(case_when(block == "re" ~ "reward_emotion", 
+                                           block == "r" ~ "reward_only")))
+
+re_r_order <- tableS11_base %>% filter(condition == "re_r_order", block == "re")
+r_re_order <- tableS11_base %>% filter(condition == "r_re_order", block == "r")
+
+# Join
+tableS11_data <- re_r_order %>% 
+  bind_rows(r_re_order) %>%
+  mutate(order = case_when(condition == "re_r_order" ~ 1, 
+                           condition == "r_re_order" ~ 0))
+  
+
+tableS11 <- glmer(choice ~ RPE_scale*order + (1 + RPE_scale|sub), 
+                 data = tableS11_data, 
+                 family = binomial,
+                 control = glmerControl(optimizer = "bobyqa"))
+
+tab_model(tableS11, transform = NULL, title = "Experiment 2: No difference in Reward PEs in first block across order",
+          pred.labels = c("Intercept", "Reward PE", "Order", "Reward PE:Order"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+          CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment2/tableS11.html"))
+```
+
+# Experiment 3: All Analyses
+
+## E3: Justice Game Static Data
+`optionType` is a useful variable which specifies the pairwise comparisons. The table below shows what each of the optionType numbers correspond to:
+
+|`optionType`|options           |
+|:----------:|:----------------:|
+|1           |Accept/Punish     |
+|2           |Accept/Compensate |
+|3           |Accept/Reverse    |
+|4           |Punish/Compensate |
+|5           |Punish/Reverse    |
+|6           |Reverse/Compensate|
+
+### Table S12: Valence and reward prediction errors predict decisions to Punish/Accept
+
+```{r table_S12}
+tableS12_data <- study3_behavior %>% 
+  filter(exclude == "keep", 
+         optionType == 1, # PUNISH / ACCEPT
+         rp >= 0) %>% 
+  mutate(EPE_X1_scale = as.numeric(scale(EPE_X, center = FALSE)), 
+         EPE_Y1_scale = as.numeric(scale(EPE_Y, center = FALSE)),
+         RPE_scale = as.numeric(scale(RPE, center = FALSE)), 
+         choice = ifelse(choice == "PUNISH", 1, 0))
+
+tableS12 <- glmer(choice ~ EPE_X1_scale + EPE_Y1_scale + RPE_scale + (1 + RPE_scale|sub), 
+            data = tableS12_data,
+            family = binomial, 
+            control=glmerControl(optimizer='bobyqa', 
+                                optCtrl=list(maxfun=2e5)))
+
+tab_model(tableS12, transform = NULL, title = "Experiment 3: Valence and reward prediction errors predict decisions to Punish/Accept", 
+          pred.labels = c("Intercept", "Valence PE", "Arousal PE", "Reward PE"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+           CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment3/tableS12.html"))
+```
+
+### Table S13: Valence and reward prediction errors predict decisions to Reverse/Compensate
+
+```{r table_S13}
+tableS13_data <- study3_behavior %>% 
+  filter(exclude == "keep", 
+         optionType == 6, # REVERSE / COMPENSATE
+         rp >= 0) %>% # remove trials with reward prediction error (if any)
+  mutate(EPE_X1_scale = as.numeric(scale(EPE_X, center = FALSE)), 
+         EPE_Y1_scale = as.numeric(scale(EPE_Y, center = FALSE)),
+         RPE_scale = as.numeric(scale(RPE, center = FALSE)), 
+         choice = ifelse(choice == "REVERSE", 1, 0))
+
+tableS13 <- glmer(choice ~ EPE_X1_scale + EPE_Y1_scale + RPE_scale + (1 + RPE_scale|sub), 
+            data = tableS13_data,
+            family = binomial, 
+            control=glmerControl(optimizer='bobyqa', 
+                                optCtrl=list(maxfun=2e5)))
+
+tab_model(tableS13, transform = NULL, title = "Experiment 3: Valence, and reward prediction errors predict decisions to REVERSE/COMPENSATE", 
+          pred.labels = c("Intercept", "Valence PE", "Arousal PE", "Reward PE"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+           CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment3/tableS13.html"))
+```
+
+
+### Expectation and Prediction Error Model Comparisons
+
+```{r inline_tableS14}
+tableS14_data <-study3_behavior %>% 
+  filter(exclude == "keep", optionType %in% c(1, 6)) %>% 
+  mutate(choice_num = case_when(choice == "REVERSE" ~ 1, 
+                                choice == "COMPENSATE" ~ 0, 
+                                choice == "PUNISH" ~ 1, 
+                                choice == "ACCEPT" ~ 0)) %>%
+  mutate(EPE_X1_scale = as.numeric(scale(EPE_X, center = FALSE)), 
+         EPE_Y1_scale = as.numeric(scale(EPE_Y, center = FALSE)),
+         RPE_scale = as.numeric(scale(RPE, center = FALSE)), 
+         RP_scale = as.numeric(scale(rp, center = FALSE)), 
+         EP_X1_scale = as.numeric(scale(EmoPredict_X, center = FALSE)), 
+         EP_Y1_scale = as.numeric(scale(EmoPredict_Y, center = FALSE)))
+
+tableS14a <- glmer(choice_num ~ RP_scale + RPE_scale + (1|sub), 
+                 data = tableS14_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+## Reward and Valence
+tableS14b <- glmer(choice_num ~ EP_X1_scale + RP_scale + EPE_X1_scale + RPE_scale + (1|sub), 
+                 data = tableS14_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+## Reward, Valence, and Arousal 
+tableS14c <- glmer(choice_num ~ EP_X1_scale + EP_Y1_scale + RP_scale + EPE_X1_scale + EPE_Y1_scale + RPE_scale + (1|sub), 
+                 data = tableS14_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+anova(tableS14a, tableS14b)
+anova(tableS14b, tableS14c)
+```
+
+### Table S14: Controlling for Expectations in the Interactive Model
+
+```{r table_S14}
+tableS14_data <-study3_behavior %>% 
+  filter(exclude == "keep", optionType %in% c(1, 6)) %>% 
+  mutate(choice_num = case_when(choice == "REVERSE" ~ 1, 
+                                choice == "COMPENSATE" ~ 0, 
+                                choice == "PUNISH" ~ 1, 
+                                choice == "ACCEPT" ~ 0)) %>%
+  mutate(EPE_X1_scale = as.numeric(scale(EPE_X, center = FALSE)), 
+         EPE_Y1_scale = as.numeric(scale(EPE_Y, center = FALSE)),
+         RPE_scale = as.numeric(scale(RPE, center = FALSE)), 
+         RP_scale = as.numeric(scale(rp, center = FALSE)), 
+         EP_X1_scale = as.numeric(scale(EmoPredict_X, center = FALSE)), 
+         EP_Y1_scale = as.numeric(scale(EmoPredict_Y, center = FALSE)))
+
+## Interactions
+tableS14a <- glmer(choice_num ~ EPE_X1_scale*EPE_Y1_scale*RPE_scale + (1 + RPE_scale|sub), 
+                 data = tableS14_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+## Additive
+tableS14c <- glmer(choice_num ~ EPE_X1_scale+EPE_Y1_scale+RPE_scale + (1 + RPE_scale|sub), 
+                 data = tableS14_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+anova(tableS14c, tableS14a)
+
+## Expectations + Interactions
+tableS14b <- glmer(choice_num ~ EP_X1_scale + EP_Y1_scale + RP_scale + EPE_X1_scale*EPE_Y1_scale*RPE_scale + (1 + RPE_scale|sub), 
+                 data = tableS14_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+anova(tableS14a, tableS14b)
+
+tab_model(tableS14b, transform = NULL, title = "Experiment 3: Controlling for Expectations in the Interactive Model", 
+          pred.labels = c("Intercept", "Valence Expectations", "Arousal Expectations", "Reward Expectations", 
+                          "Valence PE", "Arousal PE", "Reward PE", "Valence PE: Arousal PE", "Valence PE: Reward PE", "Arousal PE: Reward PE", "Valence PE: Arousal PE: Reward PE"),
+          dv.labels = c("Estimates"),
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+           CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment3/tableS14.html"))
+```
+
+## E3: Computational Modeling
+
+### Figure S8 and Table S15 - Model Comparison 
+
+```{r figS8}
+dir_jg_models <- str_c(dir_data, "/study3_jg/oscar/model_comparison/")
+
+bic <- function(ll, N, k) { -2 * ll + log(N) * k }    # -2 * LL + log(N) * k
+
+# Load   
+df_m1a <- read_csv(str_c(dir_jg_models, "/study3_m1a.csv")) %>% 
+  select(sub, m1a_ll = log_lik, soft_beta = beta, w1) %>% 
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1a_aic = aic(ll = m1a_ll, N = 20, k = 2))
+df_m1b <- read_csv(str_c(dir_jg_models, "/study3_m1b.csv")) %>% 
+  select(sub, m1b_ll = log_lik, soft_beta = beta, w1, w2) %>% 
+  mutate(m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1b_aic = aic(ll = m1b_ll, N = 20, k = 3))
+df_m1c <- read_csv(str_c(dir_jg_models, "/study3_m1c.csv")) %>% 
+  select(sub, m1c_ll = log_lik, soft_beta = beta, w1, w2, w3) %>% 
+  mutate(m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m1c_aic = aic(ll = m1c_ll, N = 20, k = 4))
+df_m2a <- read_csv(str_c(dir_jg_models, "/study3_m2a.csv")) %>% 
+  select(sub, m2a_ll = log_lik, soft_beta = beta, pt_beta, w1) %>% 
+  mutate(m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2a_aic = aic(ll = m2a_ll, N = 20, k = 3))
+df_m2b <- read_csv(str_c(dir_jg_models, "/study3_m2b.csv")) %>% 
+  select(sub, m2b_ll = log_lik, soft_beta = beta, pt_beta, w1, w2) %>% 
+  mutate(m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2b_aic = aic(ll = m2b_ll, N = 20, k = 4))
+df_m2c <- read_csv(str_c(dir_jg_models, "/study3_m2c.csv")) %>% 
+  select(sub, m2c_ll = log_lik, soft_beta = beta, pt_beta, w1, w2, w3) %>% 
+  mutate(m2c_bic = bic(ll = m2c_ll, N = 20, k = 5), 
+         m2c_aic = aic(ll = m2c_ll, N = 20, k = 5))
+
+# Exclusion
+study3_emotion <- read_csv(str_c(dir_jg_models, "/study3_ec.csv"))
+
+study3_check <- study3_emotion %>% filter(word == "Neutral") %>% 
+  mutate(exclude = if_else(between(end_X, -50, 50) & between(end_Y, -50, 50), "keep", "remove"), 
+         study = "study3")
+
+## Create table
+tableS15 <- df_m1a %>% left_join(., study3_check, by = "sub") %>% filter(exclude == "keep") %>%
+  summarise(bic = mean(m1a_bic), bic_sd = sd(m1a_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m1a") %>% 
+  bind_rows(df_m1b %>% left_join(., study3_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m1b_bic), bic_sd = sd(m1b_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m1b")) %>% 
+    bind_rows(df_m1c %>% left_join(., study3_check, by = "sub") %>% filter(exclude == "keep") %>%
+                summarise(bic = mean(m1c_bic), bic_sd = sd(m1c_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m1c")) %>% 
+  bind_rows(df_m2a %>% left_join(., study3_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m2a_bic), bic_sd = sd(m2a_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m2a")) %>% 
+  bind_rows(df_m2b %>% left_join(., study3_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m2b_bic), bic_sd = sd(m2b_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m2b")) %>% 
+  bind_rows(df_m2c %>% left_join(., study3_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m2c_bic), bic_sd = sd(m2c_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m2c")) %>%
+  mutate(delta = bic - min(bic)) %>% 
+  mutate_if(is.numeric, round, 2)
+
+## Figure S8
+# Comparing all models
+figS8a_data <- df_m1a %>%
+  select(sub, contains("m1a_")) %>% 
+  left_join(df_m1b %>% select(sub, contains("m1b_")), by = "sub") %>%
+  left_join(df_m1c %>% select(sub, contains("m1c_")), by = "sub") %>%
+  left_join(df_m2a %>% select(sub, contains("m2a_")), by = "sub") %>%
+  left_join(df_m2b %>% select(sub, contains("m2b_")), by = "sub") %>%
+  left_join(df_m2c %>% select(sub, contains("m2c_")), by = "sub") %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "model", values_to = "bic") %>%
+  mutate(model = case_when(model == "m1a_bic" ~ "m1a", 
+                           model == "m1b_bic" ~ "m1b", 
+                           model == "m1c_bic" ~ "m1c", 
+                           model == "m2a_bic" ~ "m2a", 
+                           model == "m2b_bic" ~ "m2b", 
+                           model == "m2c_bic" ~ "m2c")) %>%
+  left_join(study3_check %>% select(sub, exclude), by = "sub") %>%
+  filter(exclude == "keep")
+
+fig8b_data <- figS8a_data %>%
+  group_by(model) %>%
+  summarise(Mean = mean(bic), SD = sd(bic), N = n(), SE = SD / sqrt(N)) %>%
+  mutate_if(is.numeric, round, 2)
+
+figS8_plot <- ggplot() + 
+  geom_col(data = fig8b_data, aes(x = model, y = Mean), fill = "white", color = "red") + 
+  geom_errorbar(data = fig8b_data, aes(x = model, y = Mean, ymin = Mean - SE, ymax = Mean + SE), width = .1, color = "red") + 
+  ggbeeswarm::geom_quasirandom(data = figS8a_data, aes(x = model, y = bic), method = "pseudorandom", alpha = .6) + 
+  # Annotate
+  ylab("BIC") + 
+  xlab("Model") + 
+  theme_classic() + 
+  theme(text = element_text(size = 15))
+figS8_plot
+ggsave(filename = str_c(dir_graphs, "/supplement/experiment3/figS8.pdf"), plot = figS8_plot, width = 6, height = 4)
+
+## Significance
+## M1a - m1b
+figS8a_test <- figS8a_data %>%
+  filter(model %in% c("m1a", "m1b")) # change models accordingly
+t.test(figS8a_test$bic[figS8a_test$model == "m1b"], figS8a_test$bic[figS8a_test$model == "m1a"], paired = T)
+
+figS8a_test <- figS8a_data %>%
+  filter(model %in% c("m1b", "m1c")) # change models accordingly
+t.test(figS8a_test$bic[figS8a_test$model == "m1b"], figS8a_test$bic[figS8a_test$model == "m1c"], paired = T)
+
+figS8a_test <- figS8a_data %>%
+  filter(model %in% c("m1b", "m2b")) # change models accordingly
+t.test(figS8a_test$bic[figS8a_test$model == "m1b"], figS8a_test$bic[figS8a_test$model == "m2b"], paired = T)
+
+figS8a_test <- figS8a_data %>%
+  filter(model %in% c("m1b", "m1c")) # change models accordingly
+t.test(figS8a_test$bic[figS8a_test$model == "m1c"], figS8a_test$bic[figS8a_test$model == "m1b"], paired = T)
+
+figS8a_test <- figS8a_data %>%
+  filter(model %in% c("m2b", "m2c")) # change models accordingly
+t.test(figS8a_test$bic[figS8a_test$model == "m2c"], figS8a_test$bic[figS8a_test$model == "m2b"], paired = T)
+
+figS8a_test <- figS8a_data %>%
+  filter(model %in% c("m1c", "m2c")) # change models accordingly
+t.test(figS8a_test$bic[figS8a_test$model == "m1c"], figS8a_test$bic[figS8a_test$model == "m2c"], paired = T)
+
+figS8a_test <- figS8a_data %>%
+  filter(model %in% c("m1c", "m2c")) # change models accordingly
+t.test(figS8a_test$bic[figS8a_test$model == "m1c"], figS8a_test$bic[figS8a_test$model == "m2c"], paired = T)
+
+figS8a_data %>%
+  filter(model %in% c("m1b", "m1c")) %>%
+  select(sub, model, bic) %>%
+  pivot_wider(names_from = model, values_from = bic) %>%
+  mutate(best = case_when(m1b < m1c ~ "m1b", 
+                          m1b == m1c ~ "equal", 
+                          m1b > m1c ~ "m1c")) %>%
+  group_by(best) %>% 
+  tally()
+```
+
+### Figure S9 - Parameter Recovery
+
+```{r figS9}
+df_m1b_p <- read_csv(file = str_c(dir_data, "/study3_jg/oscar/param_recovery/study3_m1b_prior.csv")) %>% select(-X1)
+
+# Recovery 
+df_param <- read_csv( str_c(dir_data, "/study3_jg/oscar/param_recovery/study3_m1b_param_prior.csv")) %>% 
+  select(-X1, -log_lik) %>%
+  pivot_longer(cols = -sub, names_to = "params", values_to = "recovered")
+
+figS9_data <- df_param %>%
+  left_join(df_m1b_p %>% select(sub, beta, w1, w2) %>% pivot_longer(cols = -sub, names_to = "params", values_to = "original"), by = c("sub", "params")) %>%
+  mutate(params = case_when(params == "beta" ~ "inverse temp", 
+                            params == "w1" ~ "w1 - RPE", 
+                            params == "w2" ~ "w2 - VPE"))
+
+# Correlations
+beta_r <- cor.test(figS9_data$original[figS9_data$params == "inverse temp"], figS9_data$recovered[figS9_data$params == "inverse temp"], method = "spearman")
+w1_r <- cor.test(figS9_data$original[figS9_data$params == "w1 - RPE"], figS9_data$recovered[figS9_data$params == "w1 - RPE"], method = "spearman")
+w2_r <- cor.test(figS9_data$original[figS9_data$params == "w2 - VPE"], figS9_data$recovered[figS9_data$params == "w2 - VPE"], method = "spearman")
+
+figS9_plot <- ggplot(figS9_data, aes(x = original, y = recovered)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = F, aes(color = "red")) + 
+  geom_abline(aes(color = "blue", slope = 1, intercept = 0)) + 
+  scale_color_identity(name = "Model fit",
+                       breaks = c("blue", "red"),
+                       labels = c("Ideal", "Empirical"),
+                       guide = "legend") + 
+  facet_wrap(~ params, scales = "free") +
+  xlab("Fit") + 
+  ylab("Recovery") + 
+  theme_classic() + 
+  theme(aspect.ratio = 1, text = element_text(size = 15))
+figS9_plot
+
+ggsave(str_c(dir_graphs, "/supplement/experiment3/figS9.pdf"), plot = figS9_plot, width = 8, height = 8)
+```
+
+### Figure S10 - Model Identifiability
+
+```{r figS10}
+df_m1a_sim <- read_csv(str_c(dir_data, "/study3_jg/oscar/model_identify/study3_m1a_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m1b_sim <- read_csv(str_c(dir_data, "/study3_jg/oscar/model_identify/study3_m1b_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m1c_sim <- read_csv(str_c(dir_data, "/study3_jg/oscar/model_identify/study3_m1c_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m2a_sim <- read_csv(str_c(dir_data, "/study3_jg/oscar/model_identify/study3_m2a_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m2b_sim <- read_csv(str_c(dir_data, "/study3_jg/oscar/model_identify/study3_m2b_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m2c_sim <- read_csv(str_c(dir_data, "/study3_jg/oscar/model_identify/study3_m2c_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+# Find best
+df_m1a <- df_m1a_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m1a", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+df_m1b <- df_m1b_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m1b", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+  
+df_m1c <- df_m1c_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m1c", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq) %>%
+  bind_rows(data.frame(fit_model = "m2a", sim_model = "m1c", freq = 0))
+
+df_m2a <- df_m2a_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m2a", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+df_m2b <- df_m2b_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m2b", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+df_m2c <- df_m2c_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m2c", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+# Create confusion matrix
+df_cm <- df_m1a %>%
+  bind_rows(df_m1b) %>%
+  bind_rows(df_m1c) %>%
+  bind_rows(df_m2a) %>%
+  bind_rows(df_m2b) %>%
+  bind_rows(df_m2c)
+
+# Add rows for 0
+figS10_data <- df_cm %>% 
+  bind_rows(data.frame(fit_model = c("m2a", "m2a", "m2a", "m2a", 
+                                     "m2b", "m2b", "m2b", 
+                                     "m2c", "m2c"), 
+                       sim_model = c("m1a", "m2a", "m2b", "m2c", 
+                                     "m1a", "m1c", "m2a", 
+                                     "m1c", "m2a"), 
+                       freq = c(0, 0, 0, 0, 
+                                0, 0, 0, 
+                                0, 0)))
+
+figS10_plot <- ggplot(figS10_data, aes(x = fit_model, y = sim_model, fill = freq)) + 
+  geom_tile() + 
+  geom_text(aes(label=round(freq, 2)), color = "white") +
+  coord_fixed() + 
+  scale_fill_gradient2(low = "#343086", mid = "#4DBD92", midpoint = .5, high = "#F3EA22", limits = c(0, 1)) + 
+  theme_classic() 
+figS10_plot
+
+ggsave(filename = str_c(dir_graphs, "/supplement/experiment3/figS10.pdf"), figS10_plot, width = 6, height = 6)
+```
+
+## E3: Justice Game Dynamic Data
+
+### Fig. S11: Example emotion trajectory using dARM mouse tracking.
+
+```{r fig_s11}
+# Prediction
+figS11a_data <- study3_behavior_predict %>%
+  filter(sub == 8, optionType == 6, trial == 18) %>% 
+  mutate(cut_time = cut_width(x = timeStamp, width = .01, boundary = 0),
+         bin_time = as.numeric(cut_time), 
+         bin_time_s = bin_time*10/1000, 
+         choice_binary = case_when(choice == "COMPENSATE" ~ 0, choice == "REVERSE" ~ 1), 
+         choice_binary = as.numeric(choice_binary), 
+         sub = as.numeric(sub)) %>% 
+  dplyr::select(sub, trial, unfair, choice, choice_binary, timeStamp, cut_time, 
+                  bin_time, bin_time_s, XPos, YPos, optionLeft, optionRight)  %>%
+  tibble::add_column(rating = "Before_Offer")
+
+# Experience
+figS11b_data <- study3_behavior_feedback %>%
+  filter(sub == 8, optionType == 6, trial == 18) %>% 
+  mutate(cut_time = cut_width(x = timeStamp, width = .01, boundary = 0),
+         bin_time = as.numeric(cut_time), 
+         bin_time_s = bin_time*10/1000, 
+         choice_binary = case_when(choice == "COMPENSATE" ~ 0, choice == "REVERSE" ~ 1), 
+         choice_binary = as.numeric(choice_binary), 
+         sub = as.numeric(sub)) %>% 
+  dplyr::select(sub, trial, unfair, choice, choice_binary, timeStamp, cut_time, 
+                  bin_time, bin_time_s, XPos, YPos, optionLeft, optionRight)  %>%
+  tibble::add_column(rating = "After_Offer")
+
+# Post-decision
+figS11c_data <- study3_behavior_post %>%
+  filter(sub == 8, optionType == 6, trial == 18) %>% 
+  mutate(cut_time = cut_width(x = timeStamp, width = .01, boundary = 0),
+         bin_time = as.numeric(cut_time), 
+         bin_time_s = bin_time*10/1000, 
+         choice_binary = case_when(choice == "COMPENSATE" ~ 0, choice == "REVERSE" ~ 1), 
+         choice_binary = as.numeric(choice_binary), 
+         sub = as.numeric(sub)) %>% 
+  dplyr::select(sub, trial, unfair, choice, choice_binary, timeStamp, cut_time, 
+                  bin_time, bin_time_s, XPos, YPos, optionLeft, optionRight)  %>%
+  tibble::add_column(rating = "Post_Decision")
+
+# Join
+figS11_data <- figS11a_data %>% 
+  bind_rows(figS11b_data) %>%
+  bind_rows(figS11c_data) %>%
+  mutate(emotion_rating = fct_relevel(rating, "Before_Offer", "After_Offer", "Post_Decision"))
+
+figS11a_plot <- ggplot(figS11_data, aes(x = XPos, y = YPos, color = emotion_rating, group = emotion_rating)) + 
+  geom_path(size = 2) +
+  scale_y_continuous(name = "Arousal", limits = c(-250, 250)) + 
+  scale_x_continuous(name = "Valence", limits = c(-250, 250)) + 
+  scale_color_manual(values = c("#fdd49e", "#fc8d59", "#d7301f")) +
+  geom_hline(yintercept = 0) + 
+  geom_vline(xintercept = 0) +
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                     text = element_text(size = 14),
+                     aspect.ratio = 1)
+figS11a_plot
+ggsave(filename = paste0(dir_graphs, "/supplement/experiment3/figS11a.pdf"), plot=figS11a_plot, width = 5, height = 5, useDingbats = F)
+
+## Illustration 2
+# Convert into valence and arousal dimensions
+figS11_data2 <- figS11_data %>%
+  gather(key = "emotion", value = "emotion_value", c("XPos", "YPos"))
+
+figS11b_plot <- ggplot(figS11_data2, aes(x = bin_time_s, y = emotion_value, color = emotion_rating)) + 
+  geom_smooth(se = FALSE, span = .1) + 
+  scale_x_continuous(name = "Objective Time Bin") + 
+  scale_y_continuous(name = "Emotion Rating", limits = c(-250, 250)) + 
+  scale_color_manual(values = c("#fdd49e", "#fc8d59", "#d7301f", "#fdd49e", "#fc8d59", "#d7301f")) +
+  geom_hline(yintercept = 0) + 
+  facet_wrap(emotion ~ emotion_rating) + 
+  theme_bw(base_size = 12) +
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                     text = element_text(size = 14))
+ggsave(filename = paste0(dir_graphs, "/supplement/experiment3/figS11b.pdf"), plot=figS11b_plot, width = 6.5, height = 4, useDingbats = F)
+```
+
+### Figure S12: Absolute Time Visualization
+
+```{r figS12}
+### Prediction
+study3_predict_subset <- study3_behavior_predict %>%
+  select(sub, trial, unfair, moneyA, moneyB, optionLeft, optionRight, optionType, XPos, YPos, timeStamp, responseFlag, choice, rt)
+
+study3_predict_mt <- mt_import_long(raw_data = study3_predict_subset, 
+                                    xpos_label = "XPos", 
+                                    ypos_label = "YPos", 
+                                    timestamps_label = "timeStamp", 
+                                    mt_id_label = c("sub","trial"), # unique trials identified by subject and trial columns
+                                    reset_timestamps = TRUE)        # first timestamp should be subtracted from all timestamps within a trial
+
+# Count logged positions (Count number of observations per trial for a specified dimension in a trajectory array)
+study3_predict_mt <- mt_count(study3_predict_mt, save_as = "data")
+study3_predict_mt <- mt_subset(study3_predict_mt, nobs>2) # Check if there are trials with 2 or fewer logged positions
+study3_predict_norm <- mt_time_normalize(study3_predict_mt)
+
+# Aggregate trajectories per condition separately per participant
+study3_predict_avg <- mt_aggregate_per_subject(study3_predict_norm,
+                                               use="trajectories", use2_variables=c("choice"),
+                                               subject_id="sub")
+
+### Feedback
+study3_feedback_subset <- study3_behavior_feedback %>%
+  select(sub, trial, unfair, moneyA, moneyB, optionLeft, optionRight, optionType, XPos, YPos, timeStamp, responseFlag, choice, rt)
+study3_feedback_mt <- mt_import_long(raw_data = study3_feedback_subset, 
+                                     xpos_label = "XPos", 
+                                     ypos_label = "YPos", 
+                                     timestamps_label = "timeStamp", 
+                                     mt_id_label = c("sub","trial"), # unique trials identified by subject and trial columns
+                                     reset_timestamps = TRUE) # first timestamp should be subtracted from all timestamps within a trial
+
+# Count logged positions
+study3_feedback_mt <- mt_count(study3_feedback_mt, save_as = "data")
+study3_feedback_mt <- mt_subset(study3_feedback_mt, nobs>2) # Check if there are trials with 2 or fewer logged positions
+study3_feedback_norm <- mt_time_normalize(study3_feedback_mt)
+
+# Aggregate trajectories per condition separately per participant
+study3_feedback_avg <- mt_aggregate_per_subject(study3_feedback_norm,
+                                                use="trajectories", use2_variables=c("choice"),
+                                                subject_id="sub")
+            
+### Post
+study3_post_subset <- study3_behavior_post %>%
+  select(sub, trial, unfair, moneyA, moneyB, optionLeft, optionRight, optionType, XPos, YPos, timeStamp, responseFlag, choice, rt)
+study3_post_mt <- mt_import_long(raw_data = study3_post_subset, 
+                                 xpos_label = "XPos", 
+                                 ypos_label = "YPos", 
+                                 timestamps_label = "timeStamp", 
+                                 mt_id_label = c("sub","trial"), # unique trials identified by subject and trial columns
+                                 reset_timestamps = TRUE) # first timestamp should be subtracted from all timestamps within a trial
+
+# Count logged positions
+study3_post_mt <- mt_count(study3_post_mt, save_as = "data")
+study3_post_mt <- mt_subset(study3_post_mt, nobs>2) # Check if there are trials with 2 or fewer logged positions
+study3_post_norm <- mt_time_normalize(study3_post_mt)
+
+# Aggregate trajectories per condition separately per participant
+study3_post_avg <- mt_aggregate_per_subject(study3_post_norm,
+                                            use="trajectories", use2_variables=c("choice"),
+                                            subject_id="sub")
+
+### Figure S12 data
+avg_data <- function(df) {
+  df_avg <- df %>% 
+    group_by(mt_seq, choice) %>% 
+    dplyr::summarise(meanX = mean(xpos), meanY = mean(ypos), sdX = sd(xpos), sdY = sd(ypos), 
+                     N = n(), seX = sdX / sqrt(N), seY = sdY / sqrt(N)) %>% 
+    mutate(lwr_x = meanX - qt(1 - ((1 - .95) / 2), N - 1) * seX, 
+           upr_x = meanX + qt(1 - ((1 - .95) / 2), N - 1) * seX, 
+           lwr_y = meanY - qt(1 - ((1 - .95) / 2), N - 1) * seY, 
+           upr_y = meanY + qt(1 - ((1 - .95) / 2), N - 1) * seY)
+  
+  return(df_avg)
+}
+
+pred_data <- avg_data(study3_predict_avg)  # Nans from the end where very little data exists 
+feed_data <- avg_data(study3_feedback_avg)
+post_data <- avg_data(study3_post_avg)
+
+graph_theme <- theme_bw(base_size = 12) +
+  theme(panel.grid = element_blank(), # Increase size of gridlines 
+        axis.line = element_line(size = .7, color = "black"), # Increase size of axis lines 
+        text = element_text(size = 14)) # Increase the font size
+group_colors <- c("#984ea3", "#4daf4a", "#ff7f00", "#e41a1c") #accept, compensate, punish, reverse
+
+
+## Figure S12
+pred_plot_v <- ggplot(pred_data, aes(x = mt_seq, y = meanX)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_x, ymax = upr_x, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 800), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  graph_theme +
+  theme_classic() + ylab("Valence") 
+
+pred_plot_a <- ggplot(pred_data, aes(x = mt_seq, y = meanY)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_y, ymax = upr_y, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 800), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  graph_theme +
+  theme_classic() + ylab("Arousal") 
+
+feed_plot_v <- ggplot(feed_data, aes(x = mt_seq, y = meanX)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_x, ymax = upr_x, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 800), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  graph_theme +
+  theme_classic() + ylab("Valence") 
+
+feed_plot_a <- ggplot(feed_data, aes(x = mt_seq, y = meanY)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_y, ymax = upr_y, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 800), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  graph_theme +
+  theme_classic() + ylab("Arousal") 
+
+post_plot_v <- ggplot(post_data, aes(x = mt_seq, y = meanX)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_x, ymax = upr_x, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 800), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  graph_theme +
+  theme_classic() + ylab("Valence") 
+
+post_plot_a <- ggplot(post_data, aes(x = mt_seq, y = meanY)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_y, ymax = upr_y, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 800), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  graph_theme +
+  theme_classic() + ylab("Arousal") 
+
+figS12_plot <- cowplot::plot_grid(pred_plot_v + theme(legend.position="none"), feed_plot_v + theme(legend.position="none"), post_plot_v + theme(legend.position="none"),
+                               pred_plot_a + theme(legend.position="none"), feed_plot_a + theme(legend.position="none"), post_plot_a + theme(legend.position="none"),
+                               nrow = 2)
+ggsave(filename = paste0(dir_graphs, "/supplement/experiment3/figS12.pdf"), plot=figS12_plot,  width = 10, height = 8, useDingbats = F)
+ggsave(filename = paste0(dir_graphs, "/supplement/experiment3/figS12_legend.pdf"), plot=pred_plot_v,  width = 10, height = 8, useDingbats = F)
+```
+
+### Figure 3 (manuscript): Normalized Time Visualization
+
+```{r fig3}
+### Predict
+study3_predict_subset <- study3_behavior_predict %>%
+  select(sub, trial, unfair, moneyA, moneyB, optionLeft, optionRight, optionType, XPos, YPos, timeStamp, responseFlag, choice, rt)
+study3_predict_mt <- mt_import_long(raw_data = study3_predict_subset, 
+                                    xpos_label = "XPos", 
+                                    ypos_label = "YPos", 
+                                    timestamps_label = "timeStamp", 
+                                    mt_id_label = c("sub","trial"), 
+                                    reset_timestamps = TRUE)
+
+# Count logged positions
+study3_predict_mt <- mt_count(study3_predict_mt, save_as = "data")
+study3_predict_mt <- mt_subset(study3_predict_mt, nobs>2)
+study3_predict_norm <- mt_time_normalize(study3_predict_mt)
+
+# Aggregate time-normalized trajectories per condition separately per participant
+study3_predict_avg <- mt_aggregate_per_subject(study3_predict_norm,
+                                               use="tn_trajectories", use2_variables=c("choice"),
+                                               subject_id="sub")
+
+### Feedback
+study3_feedback_subset <- study3_behavior_feedback %>%
+  select(sub, trial, unfair, moneyA, moneyB, optionLeft, optionRight, optionType, XPos, YPos, timeStamp, responseFlag, choice, rt)
+study3_feedback_mt <- mt_import_long(raw_data = study3_feedback_subset, 
+                                     xpos_label = "XPos", 
+                                     ypos_label = "YPos", 
+                                     timestamps_label = "timeStamp", 
+                                     mt_id_label = c("sub","trial"), 
+                                     reset_timestamps = TRUE)
+
+# Count logged positions
+study3_feedback_mt <- mt_count(study3_feedback_mt, save_as = "data")
+study3_feedback_mt <- mt_subset(study3_feedback_mt, nobs>2)
+study3_feedback_norm <- mt_time_normalize(study3_feedback_mt)
+
+# Aggregate time-normalized trajectories per condition separately per participant
+study3_feedback_avg <- mt_aggregate_per_subject(study3_feedback_norm,
+                                                use="tn_trajectories", use2_variables=c("choice"),
+                                                subject_id="sub")
+                                                
+### Post
+study3_post_subset <- study3_behavior_post %>%
+  select(sub, trial, unfair, moneyA, moneyB, optionLeft, optionRight, optionType, XPos, YPos, timeStamp, responseFlag, choice, rt)
+study3_post_mt <- mt_import_long(raw_data = study3_post_subset, 
+                                 xpos_label = "XPos", 
+                                 ypos_label = "YPos", 
+                                 timestamps_label = "timeStamp", 
+                                 mt_id_label = c("sub","trial"), # unique trials identified by subject and trial columns
+                                 reset_timestamps = TRUE) # first timestamp should be subtracted from all timestamps within a trial
+
+# Count logged positions
+study3_post_mt <- mt_count(study3_post_mt, save_as = "data")
+study3_post_mt <- mt_subset(study3_post_mt, nobs>2) # Check if there are trials with 2 or fewer logged positions
+study3_post_norm <- mt_time_normalize(study3_post_mt)
+
+# Aggregate time-normalized trajectories per condition separately per participant
+study3_post_avg <- mt_aggregate_per_subject(study3_post_norm,
+                                            use="tn_trajectories", use2_variables=c("choice"),
+                                            subject_id="sub")
+
+### Figure 3 data
+avg_data <- function(df) {
+  df_avg <- df %>% 
+    group_by(steps, choice) %>% 
+    dplyr::summarise(meanX = mean(xpos), meanY = mean(ypos), sdX = sd(xpos), sdY = sd(ypos), 
+                     N = n(), seX = sdX / sqrt(N), seY = sdY / sqrt(N)) %>% 
+    mutate(lwr_x = meanX - qt(1 - ((1 - .95) / 2), N - 1) * seX, 
+           upr_x = meanX + qt(1 - ((1 - .95) / 2), N - 1) * seX, 
+           lwr_y = meanY - qt(1 - ((1 - .95) / 2), N - 1) * seY, 
+           upr_y = meanY + qt(1 - ((1 - .95) / 2), N - 1) * seY)
+  
+  return(df_avg)
+}
+
+pred_data <- avg_data(study3_predict_avg)
+feed_data <- avg_data(study3_feedback_avg)
+post_data <- avg_data(study3_post_avg)
+
+### Figure 3 Plot
+# Aesthetics
+graph_theme <- theme_bw(base_size = 12) +
+  theme(panel.grid = element_blank(), # Increase size of gridlines 
+        axis.line = element_line(size = .7, color = "black"), # Increase size of axis lines 
+        text = element_text(size = 14)) # Increase the font size
+group_colors <- c("#BBBBBB", "#66CCEE", "#AA3377", "#CCBB44") # Paul Tol
+
+pred_plot_v <- ggplot(pred_data, aes(x = steps, y = meanX)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_x, ymax = upr_x, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 100), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  geom_hline(aes(yintercept = 0), linetype = "dashed", size = .5) + 
+  graph_theme +
+  theme_classic() + ylab("Valence") 
+
+pred_plot_a <- ggplot(pred_data, aes(x = steps, y = meanY)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_y, ymax = upr_y, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 100), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  geom_hline(aes(yintercept = 0), linetype = "dashed", size = .5) + 
+  graph_theme +
+  theme_classic() + ylab("Arousal") 
+
+feed_plot_v <- ggplot(feed_data, aes(x = steps, y = meanX)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_x, ymax = upr_x, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 100), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  geom_hline(aes(yintercept = 0), linetype = "dashed", size = .5) + 
+  graph_theme +
+  theme_classic() + ylab("Valence") 
+
+feed_plot_a <- ggplot(feed_data, aes(x = steps, y = meanY)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_y, ymax = upr_y, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 100), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  geom_hline(aes(yintercept = 0), linetype = "dashed", size = .5) + 
+  graph_theme +
+  theme_classic() + ylab("Arousal") 
+
+post_plot_v <- ggplot(post_data, aes(x = steps, y = meanX)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_x, ymax = upr_x, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 100), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  geom_hline(aes(yintercept = 0), linetype = "dashed", size = .5) + 
+  graph_theme +
+  theme_classic() + ylab("Valence") 
+
+post_plot_a <- ggplot(post_data, aes(x = steps, y = meanY)) + 
+  geom_line(aes(color = choice)) + 
+  geom_ribbon(aes(ymin = lwr_y, ymax = upr_y, fill = choice), alpha = .1) + 
+  coord_cartesian(xlim = c(0, 100), ylim = c(-250, 250)) + 
+  scale_color_manual(values = group_colors) + 
+  scale_fill_manual(values = group_colors) + 
+  geom_hline(aes(yintercept = 0), linetype = "dashed", size = .5) + 
+  graph_theme +
+  theme_classic() + ylab("Arousal") 
+
+
+fig3_plot <- cowplot::plot_grid(pred_plot_v + theme(legend.position="none"), feed_plot_v + theme(legend.position="none"), post_plot_v + theme(legend.position="none"),
+                               pred_plot_a + theme(legend.position="none"), feed_plot_a + theme(legend.position="none"), post_plot_a + theme(legend.position="none"),
+                               nrow = 2)
+ggsave(filename = paste0(dir_graphs, "/manuscript/experiment3/fig3.pdf"), plot=fig3_plot,  width = 10, height = 8, useDingbats = F)
+ggsave(filename = paste0(dir_graphs, "/manuscript/experiment3/fig3_legend.pdf"), plot=pred_plot_v,  width = 10, height = 8, useDingbats = F)
+
+## Testing Compensate vs Reverse on feedback only 
+study3_feedback_subset <- study3_behavior_feedback %>%
+  select(sub, trial, unfair, moneyA, moneyB, optionLeft, optionRight, optionType, XPos, YPos, timeStamp, responseFlag, choice, rt)
+study3_feedback_mt <- mt_import_long(raw_data = study3_feedback_subset, 
+                                     xpos_label = "XPos", 
+                                     ypos_label = "YPos", 
+                                     timestamps_label = "timeStamp", 
+                                     mt_id_label = c("sub","trial"), 
+                                     reset_timestamps = TRUE)
+
+# Count logged positions
+study3_feedback_mt <- mt_count(study3_feedback_mt, save_as = "data")
+study3_feedback_mt <- mt_subset(study3_feedback_mt, nobs>2)
+study3_feedback_norm <- mt_time_normalize(study3_feedback_mt)
+
+# Aggregate time-normalized trajectories per condition separately per participant
+study3_feedback_avg <- mt_aggregate_per_subject(study3_feedback_norm,
+                                                use="tn_trajectories", use2_variables=c("optionType", "choice"),  # only want COMP VS REV pairing
+                                                subject_id="sub")
+
+## Cluster based permutation
+feedback_data <- study3_feedback_avg %>% filter(optionType == 6)  # COMP vs REV
+feedback_stats <- aov_by_bin(.data = feedback_data, bin = steps, formula = xpos ~ choice)
+feedback_clusters <- detect_clusters(.data = feedback_stats, bin = steps, stat = stat, p, alpha = 0.05)
+feedback_ps <- feedback_data %>% nest(data = c(optionType, mt_seq, timestamps, xpos, ypos, steps)) 
+
+feedback_nhds <- cluster_nhds(
+  n = 1000, .data = feedback_ps, bin = steps,
+  formula = xpos ~ choice,
+  fn = shuffle_each, choice, sub)
+feedback_results <- pvalues(feedback_clusters %>% mutate(effect = "choice"), feedback_nhds)
+knitr::kable(feedback_results)
+
+# Convert 37 time step (0 - 100 range instead of 1 - 101) into seconds 
+study3_feedback_raw <- mt_aggregate_per_subject(study3_feedback_norm,
+                                                use="trajectories", use2_variables=c("optionType", "choice"),
+                                                subject_id="sub")
+abs_times <- study3_feedback_raw %>%
+  filter(optionType == 6) %>%
+  group_by(sub, choice) %>%
+  summarise(max_time = max(timestamps)) %>% 
+  group_by(choice) %>%
+  summarise(mean_time = mean(max_time)) %>%
+  mutate(abs_time = 37 / 100 * mean_time) 
+```
+
+### Table S16: Using emotional trajectories to predict choice
+
+```{r tableS16}
+### Feedback 
+study3_feedback_subset <- study3_behavior_feedback %>%
+  select(sub, trial, unfair, moneyA, moneyB, optionLeft, optionRight, optionType, XPos, YPos, timeStamp, responseFlag, choice, rt)
+study3_feedback_mt <- mt_import_long(raw_data = study3_feedback_subset, 
+                                     xpos_label = "XPos", 
+                                     ypos_label = "YPos", 
+                                     timestamps_label = "timeStamp", 
+                                     mt_id_label = c("sub","trial"),
+                                     reset_timestamps = TRUE)  
+
+# Count logged positions
+study3_feedback_mt <- mt_count(study3_feedback_mt, save_as = "data")
+study3_feedback_mt <- mt_subset(study3_feedback_mt, nobs>2) 
+study3_feedback_norm <- mt_time_normalize(study3_feedback_mt)
+
+# Aggregate time-normalized trajectories per condition
+study3_feedback_avg <- mt_aggregate_per_subject(study3_feedback_norm,
+                                                use="tn_trajectories", use2_variables=c("optionType", "unfair", "choice"),
+                                                subject_id="sub")
+study3_feedback_raw <- mt_aggregate_per_subject(study3_feedback_norm,
+                                                use="trajectories", use2_variables=c("optionType", "unfair", "choice"),
+                                                subject_id="sub")
+
+#### Cluster and table
+option1 <- study3_feedback_avg %>% filter(optionType == 1)
+op1_lo <- aov_by_bin(.data = option1 %>% filter(unfair == "lo"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 1, unfair = "lo")
+op1_md <- aov_by_bin(.data = option1 %>% filter(unfair == "md"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 1, unfair = "md")
+op1_hi <- aov_by_bin(.data = option1 %>% filter(unfair == "hi"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 1, unfair = "hi")
+
+option2 <- study3_feedback_avg %>% filter(optionType == 2)
+op2_lo <- aov_by_bin(.data = option2 %>% filter(unfair == "lo"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 2, unfair = "lo")
+op2_md <- aov_by_bin(.data = option2 %>% filter(unfair == "md"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 2, unfair = "md")
+op2_hi <- aov_by_bin(.data = option2 %>% filter(unfair == "hi"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 2, unfair = "hi")
+
+option3 <- study3_feedback_avg %>% filter(optionType == 3)
+op3_lo <- aov_by_bin(.data = option3 %>% filter(unfair == "lo"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 3, unfair = "lo")
+op3_md <- aov_by_bin(.data = option3 %>% filter(unfair == "md"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 3, unfair = "md")
+op3_hi <- aov_by_bin(.data = option3 %>% filter(unfair == "hi"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 3, unfair = "hi")
+
+option4 <- study3_feedback_avg %>% filter(optionType == 4)
+op4_lo <- aov_by_bin(.data = option4 %>% filter(unfair == "lo"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 4, unfair = "lo")
+op4_md <- aov_by_bin(.data = option4 %>% filter(unfair == "md"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 4, unfair = "md")
+op4_hi <- aov_by_bin(.data = option4 %>% filter(unfair == "hi"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 4, unfair = "hi")
+
+option5 <- study3_feedback_avg %>% filter(optionType == 6)
+op5_lo <- aov_by_bin(.data = option5 %>% filter(unfair == "lo"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 5, unfair = "lo")
+op5_md <- aov_by_bin(.data = option5 %>% filter(unfair == "md"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 5, unfair = "md")
+op5_hi <- aov_by_bin(.data = option5 %>% filter(unfair == "hi"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 5, unfair = "hi")
+
+option6 <- study3_feedback_avg %>% filter(optionType == 6)
+op6_lo <- aov_by_bin(.data = option6 %>% filter(unfair == "lo"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 6, unfair = "lo")
+op6_md <- aov_by_bin(.data = option6 %>% filter(unfair == "md"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 6, unfair = "md")
+op6_hi <- aov_by_bin(.data = option6 %>% filter(unfair == "hi"), bin = steps, formula = xpos ~ choice) %>%
+  detect_clusters(bin = steps, stat = stat, p = p, alpha = 0.05) %>% mutate(optionType = 6, unfair = "hi")
+
+## Join
+tableS16_data <- bind_rows(op1_lo, op1_md, op1_hi, 
+                      op2_lo, op2_md, op2_hi, 
+                      op3_lo, op3_md, op3_hi, 
+                      op4_lo, op4_md, op4_hi, 
+                      op5_lo, op5_md, op5_hi, 
+                      op6_lo, op6_md, op6_hi) %>%
+  arrange(optionType, unfair)
+
+## Join absolute times
+abs_times_solo <- study3_feedback_raw %>%
+  group_by(sub, choice, optionType, unfair) %>%
+  summarise(max_time = max(timestamps)) %>% 
+  group_by(choice, optionType, unfair) %>%
+  summarise(mean_time = mean(max_time)) %>%
+  group_by(optionType, unfair) %>%
+  summarise(mean_time = max(mean_time))
+
+abs_times <- tableS16_data %>% 
+  left_join(., abs_times_solo, by = c("optionType", "unfair")) %>%
+  mutate(approx_time = mean_time*(b0-1)/100) %>%
+  group_by(optionType, unfair) %>%
+  summarise(approx_time = max(approx_time))
+
+tableS16 <- abs_times %>% 
+  left_join(tableS16_data, by = c("optionType", "unfair")) %>%
+  arrange(optionType, unfair)
+tableS16
+```
+
+### Fig. S12: Cluster-based permutation testing
+
+```{r fig_s12}
+library(mousetrap)
+study2_feedback_subset <- study2_behavior_feedback %>%
+  select(sub, trial, unfair, moneyA, moneyB, optionLeft, optionRight, optionType, XPos, YPos, timeStamp, responseFlag, choice, rt)
+
+## Load
+study2_feedback_mt <- mt_import_long(raw_data = study2_feedback_subset, 
+                                     xpos_label = "XPos", 
+                                     ypos_label = "YPos", 
+                                     timestamps_label = "timeStamp", 
+                                     mt_id_label = c("sub","trial"), # unique trials identified by subject and trial columns
+                                     reset_timestamps = TRUE) # first timestamp should be subtracted from all timestamps within a trial
+
+## Resampling
+study2_feedback_mt <- mt_count(study2_feedback_mt, save_as = "data")
+study2_feedback_mt <- mt_subset(study2_feedback_mt, nobs>2) # Check if there are trials with 2 or fewer logged positions
+
+study2_feedback_norm <- mt_time_normalize(study2_feedback_mt)
+
+# Aggregate time-normalized trajectories per decision pair, offer unfairness, and participant
+study2_feedback_avg <- mt_aggregate_per_subject(study2_feedback_norm,
+  use="tn_trajectories", use2_variables=c("optionType", "unfair", "choice"),
+  subject_id="sub")
+
+# objective time
+test <- mt_aggregate_per_subject(study2_feedback_norm,
+  use="trajectories", use2_variables=c("optionType", "unfair", "choice"),
+  subject_id="sub")
+
+test <- study2_feedback_subset %>% 
+  filter(unfair == "hi", optionType == 6) %>%
+  group_by(trial, sub, choice) %>%
+  summarise(max_time = max(timeStamp)) %>%
+  group_by(choice) %>%
+  summarise(avg_time = mean(max_time))
+
+
+#sub1 <- study2_feedback_avg %>% filter(sub == 1, optionType == 6, unfair == "hi")
+
+### Cluster based permutation testing
+library(exchangr)
+library(clusterperm)
+
+# Testing aov for one time frame
+study2_comp_rev_hi <- study2_feedback_avg %>% 
+  filter(optionType == 6, unfair == "hi")
+
+cur2 <- aov_by_bin(.data = study2_comp_rev_hi, bin = steps, formula = xpos ~ choice)
+
+# CPT
+orig <- detect_clusters(.data = cur2, bin = steps, stat = stat, p, alpha = 0.05)
+knitr::kable(orig)
+
+# p-values
+dat_prec <- study2_comp_rev_hi %>% 
+  nest(data = c(optionType, unfair, mt_seq, timestamps, xpos, ypos, steps)) # sub and choice not nested
+
+nhds_prec <- cluster_nhds(
+  n = 1000, .data = dat_prec, bin = steps,
+  formula = xpos ~ choice,
+  fn = shuffle_each, choice, sub)
+
+
+## get p-values
+results_prec <- pvalues(orig %>% mutate(effect = "choice"), nhds_prec)
+knitr::kable(results_prec)
+
+
+# Manual
+x2 <- cur2 %>% dplyr::arrange(steps)
+sig <- as.integer((dplyr::pull(x2, p) < 0.05) * sign(dplyr::pull(x2, stat)))
+runs <- rle(sig)
+run_ix <- which(runs$values != 0L)
+mystat <- dplyr::pull(x2, stat)
+
+if (length(run_ix) == 0L) {
+  tibble::tibble(b0 = NA, b1 = NA, sign = NA_integer_, cms = 0)
+} else {
+  bins <- dplyr::pull(x2, steps)
+  
+  purrr::map_df(run_ix, function(.x) {
+    if (.x == 1L) {
+      t0 <- 1L
+    } else {
+      t0 <- sum(runs$lengths[seq_len(.x - 1L)]) + 1L
+    }
+    t1 <- t0 + runs$lengths[.x] - 1L
+    tibble::tibble(b0 = ifelse(is.na(t0), NA, bins[t0]),
+                   b1 = ifelse(is.na(t1), NA, bins[t1]),
+                   sign = sign(mystat[t0]),
+                   cms = abs(sum(mystat[t0:t1])))
+  })
+}
+
+if(run_ix == 1L) {
+  t0 <- 1L
+} else {
+  t0 <- sum(runs$lengths[seq_len(run_ix - 1L)]) + 1L
+}
+```
+
+# Experiment 4: All Analyses
+
+## E4: Ultimatum Game Analyses
+
+### Fig S13: Variability in prediction errors across clinical groups
+
+```{r fig_s13}
+## Figure S13
+figS13_data <- study4_behavior %>% 
+  select(sub, cesDepress, EPE_X1_scale, EPE_Y1_scale, RPE_scale) %>%
+  pivot_longer(cols = c(EPE_X1_scale, EPE_Y1_scale, RPE_scale), names_to = "pe_measure", values_to = "pe_value") %>%
+  mutate(pe_measure = case_when(pe_measure == "EPE_X1_scale" ~ "Valence PE", 
+                                pe_measure == "EPE_Y1_scale" ~ "Arousal PE", 
+                                pe_measure == "RPE_scale" ~ "Reward PE"), 
+         pe_measure = fct_relevel(pe_measure, "Arousal PE", "Valence PE", "Reward PE"))
+
+# Plot
+figS13_plot <- ggplot(figS13_data, aes(x = pe_value, fill = cesDepress)) + 
+  geom_density(alpha = .2) + 
+  scale_fill_manual(name = "Clinical Group", values = c("red", "blue")) + # healthy controls, depressed group
+  facet_wrap(~pe_measure, scales = "free") + 
+  xlab("Prediction Error Value") + 
+  geom_vline(xintercept = 0, lty = 3) + 
+  theme_bw() + theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+                     text = element_text(size = 14), title = element_text(size = 20))
+figS13_plot
+ggsave(filename = paste0(dir_graphs, "/supplement/experiment4/figS13.pdf"), plot=figS13_plot, width = 8, height = 6, useDingbats = F)
+
+## Stats
+figS13_sd <- figS13_data %>% 
+  group_by(cesDepress, pe_measure) %>%
+  summarise(sd_rating = round(sd(pe_value), 2))
+figS13_sd
+```
+
+### Fig. S14 and Table S17: Alexithymia impairs emotion but not reward prediction errors
+
+```{r figS14_tableS17}
+### Table S17
+tableS17_data <- study4_behavior_questionnaires %>% 
+  filter(tasLabel %in% c("No_Alexithymia", "Alexithymia")) %>% # remove possible alexithymia
+  select(sub, choice, tasLabel, EPE_X1_scale, EPE_Y1_scale, RPE_scale) %>% 
+  mutate(alexithymia_binary = ifelse(tasLabel == "No_Alexithymia", 0, 1))
+  
+tableS17 <- glmer(choice ~ EPE_X1_scale*alexithymia_binary + EPE_Y1_scale*alexithymia_binary + RPE_scale*alexithymia_binary + (1 + EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
+            data = tableS17_data,
+            family = binomial, 
+            control = glmerControl(optimizer = "bobyqa"))
+
+tab_model(tableS17, transform = NULL, title = "Experiment 4: Alxiethymia impairs emotion but not reward prediction errors", 
+          pred.labels = c("Intercept", "Valence PE", "Alexithymia", "Arousal PE", "Reward PE", 
+                          "Valence PE:Alexithymia", "Arousal PE:Alexithymia", "Reward PE:Alexithymia"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+           CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment4//tableS17.html"))
+
+# Graph
+xRange1 <- with(tableS17_data, seq(round(min(EPE_X1_scale, na.rm=T), 1), round(max(EPE_X1_scale, na.rm=T), 1), by = .1))
+xRange2 <- with(tableS17_data, seq(round(min(EPE_Y1_scale, na.rm=T), 1), round(max(EPE_Y1_scale, na.rm=T), 1), by = .1))
+xRange3 <- with(tableS17_data, seq(round(min(RPE_scale, na.rm=T), 1), round(max(RPE_scale, na.rm=T), 1), by = .1))
+
+predict1 <- with(tableS17_data, expand.grid(EPE_X1_scale=xRange1, EPE_Y1_scale=0, RPE_scale = 0, alexithymia_binary = c(0, 1)))
+predict2 <- with(tableS17_data, expand.grid(EPE_X1_scale=0, EPE_Y1_scale=xRange2, RPE_scale = 0, alexithymia_binary = c(0, 1)))
+predict3 <- with(tableS17_data, expand.grid(EPE_X1_scale=0, EPE_Y1_scale=0, RPE_scale = xRange3, alexithymia_binary = c(0, 1)))
+
+predictedInterval1 <- data.frame(predictSE(tableS17, newdata=predict1, type="response", print.matrix=T))
+predictedInterval2 <- data.frame(predictSE(tableS17, newdata=predict2, type="response", print.matrix=T))
+predictedInterval3 <- data.frame(predictSE(tableS17, newdata=predict3, type="response", print.matrix=T))
+
+plot_data1 <- bind_cols(predict1, predictedInterval1) %>% 
+  mutate(alexithymia_binary = case_when(alexithymia_binary == 0 ~ "No Alexithymia", 
+                                        alexithymia_binary == 1 ~ "Alexithymia"))
+plot_data2 <- bind_cols(predict2, predictedInterval2) %>% 
+  mutate(alexithymia_binary = case_when(alexithymia_binary == 0 ~ "No Alexithymia", 
+                                        alexithymia_binary == 1 ~ "Alexithymia"))
+plot_data3 <- bind_cols(predict3, predictedInterval3) %>% 
+  mutate(alexithymia_binary = case_when(alexithymia_binary == 0 ~ "No Alexithymia", 
+                                        alexithymia_binary == 1 ~ "Alexithymia"))
+
+# Plotted an alternative way 
+figS14a_plot <- ggplot() + 
+  # Valence PE
+  geom_line(data = plot_data1, aes(x = EPE_X1_scale, y = fit, color = alexithymia_binary), size = 1.5) + 
+  geom_ribbon(data = plot_data1, aes(x = EPE_X1_scale, ymax = fit + se.fit, ymin = fit - se.fit, fill = alexithymia_binary), alpha = .2) + 
+  scale_y_continuous(labels = scales::percent, name = "p(Reject)") +
+  xlab("Valence PE") + 
+  scale_color_manual(name = "Clinical Group", values = c("red", "blue")) + 
+  scale_fill_manual(name = "Clinical Group", values = c("red", "blue")) + 
+  coord_cartesian(ylim = c(0, 1)) + 
+  geom_vline(xintercept = 0, lty = 3) + 
+  annotate("segment", x = -3, xend = 3, y = 1, yend = 1) + 
+  annotate("text", label = "**", x = 0, y = 1.02) + 
+  theme_bw() + theme(text = element_text(size = 20), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+figS14b_plot <- ggplot() + 
+  # Arousal PE
+  geom_line(data = plot_data2, aes(x = EPE_Y1_scale, y = fit, color = alexithymia_binary), size = 1.5) + 
+  geom_ribbon(data = plot_data2, aes(x = EPE_Y1_scale, ymax = fit + se.fit, ymin = fit - se.fit, fill = alexithymia_binary), alpha = .2) + 
+  scale_y_continuous(labels = scales::percent, name = "p(Reject)") +
+  coord_cartesian(ylim = c(0, 1)) + 
+  xlab("Arousal PE") + 
+  scale_color_manual(name = "Clinical Group", values = c("red", "blue")) + 
+  scale_fill_manual(name = "Clinical Group", values = c("red", "blue")) + 
+  geom_vline(xintercept = 0, lty = 3) + 
+  annotate("segment", x = -3, xend = 3, y = 1, yend = 1) + 
+  annotate("text", label = "*", x = 0, y = 1.02) + 
+  theme_bw() + theme(text = element_text(size = 20), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+figS14c_plot <- ggplot() + 
+  geom_line(data = plot_data3, aes(x = RPE_scale, y = fit, color = alexithymia_binary), size = 1.5) + 
+  geom_ribbon(data = plot_data3, aes(x = RPE_scale, ymax = fit + se.fit, ymin = fit - se.fit, fill = alexithymia_binary), alpha = .2) + 
+  scale_y_continuous(labels = scales::percent, name = "p(Reject)") +
+  coord_cartesian(ylim = c(0, 1)) + 
+  scale_color_manual(name = "Clinical Group", values = c("red", "blue")) +
+  scale_fill_manual(name = "Clinical Group", values = c("red", "blue")) + 
+  xlab("Reward PE") + 
+  geom_vline(xintercept = 0, lty = 3) + 
+  annotate("segment", x = -3, xend = 3, y = 1, yend = 1) + 
+  annotate("text", label = "n.s.", x = 0, y = 1.02) + 
+  theme_bw() + theme(text = element_text(size = 20), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+figS14_plot <- cowplot::plot_grid(figS14a_plot, figS14b_plot, figS14c_plot, labels = c("A", "B", "C"), nrow = 1)
+figS14_plot
+ggsave(filename = paste0(dir_graphs, "/supplement/experiment4/figS14.pdf"), plot=figS14_plot, width = 16, height = 6, useDingbats = F)
+```
+
+### Figure S15 and Table S18: TEPS predicts impairments in reward, but not emotion, PEs
+
+```{r figS15_tableS18}
+tableS18_data <- study4_behavior_questionnaires %>% 
+  select(sub, choice, tepsTotal, EPE_X1_scale, EPE_Y1_scale, RPE_scale) %>%
+  mutate(teps_s = as.numeric(scale(tepsTotal)))
+  
+tableS18 <- glmer(choice ~ EPE_X1_scale*teps_s + EPE_Y1_scale*teps_s + RPE_scale*teps_s + (1 + EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
+            data = tableS18_data,
+            family = binomial, 
+            control = glmerControl(optimizer = "bobyqa"))
+
+tab_model(tableS18, transform = NULL, title = "Experiment 4: TEPS shows imapriments in reward, but not emotion, prediction errors", 
+          pred.labels = c("Intercept", "Valence PE", "TEPS", "Arousal PE", "Reward PE", 
+                          "Valence PE:TEPS", "Arousal PE:TEPS", "Reward PE:TEPS"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+           CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment4/tableS18.html"))
+
+# Graph
+xRange1 <- with(tableS18_data, seq(round(min(EPE_X1_scale, na.rm=T), 1), round(max(EPE_X1_scale, na.rm=T), 1), by = .1))
+xRange2 <- with(tableS18_data, seq(round(min(EPE_Y1_scale, na.rm=T), 1), round(max(EPE_Y1_scale, na.rm=T), 1), by = .1))
+xRange3 <- with(tableS18_data, seq(round(min(RPE_scale, na.rm=T), 1), round(max(RPE_scale, na.rm=T), 1), by = .1))
+
+predict1 <- with(tableS18_data, expand.grid(EPE_X1_scale=xRange1, EPE_Y1_scale=0, RPE_scale = 0, teps_s = c(-1, 0, 1)))
+predict2 <- with(tableS18_data, expand.grid(EPE_X1_scale=0, EPE_Y1_scale=xRange2, RPE_scale = 0, teps_s = c(-1, 0, 1)))
+predict3 <- with(tableS18_data, expand.grid(EPE_X1_scale=0, EPE_Y1_scale=0, RPE_scale = xRange3, teps_s = c(-1, 0, 1)))
+
+predictedInterval1 <- data.frame(predictSE(tableS18, newdata=predict1, type="response", print.matrix=T))
+predictedInterval2 <- data.frame(predictSE(tableS18, newdata=predict2, type="response", print.matrix=T))
+predictedInterval3 <- data.frame(predictSE(tableS18, newdata=predict3, type="response", print.matrix=T))
+
+plot_data1 <- bind_cols(predict1, predictedInterval1)
+plot_data2 <- bind_cols(predict2, predictedInterval2)
+plot_data3 <- bind_cols(predict3, predictedInterval3)
+
+# Plotted an alternative way 
+figS15a_plot <- ggplot() + 
+  # Valence PE
+  geom_line(data = plot_data1, aes(x = EPE_X1_scale, y = fit, color = factor(teps_s)), size = 1.5) + 
+  geom_ribbon(data = plot_data1, aes(x = EPE_X1_scale, ymax = fit + se.fit, ymin = fit - se.fit, fill = factor(teps_s)), alpha = .2) + 
+  scale_y_continuous(labels = scales::percent, name = "p(Reject)") +
+  xlab("Valence PE") + 
+  scale_color_manual(labels = c("-1 SD", "0 SD", "+ 1 SD"), values = c("#eff3ff", "#6baed6", "#08519c"), name = "TEPS SDs") +
+  scale_fill_manual(labels = c("-1 SD", "0 SD", "+ 1 SD"), values = c("#eff3ff", "#6baed6", "#08519c"), name = "TEPS SDs") +
+  coord_cartesian(ylim = c(0, 1)) + 
+  geom_vline(xintercept = 0, lty = 3) + 
+  theme_bw() + theme(text = element_text(size = 20), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+figS15b_plot <- ggplot() + 
+  # Arousal PE
+  geom_line(data = plot_data2, aes(x = EPE_Y1_scale, y = fit, color = factor(teps_s)), size = 1.5) + 
+  geom_ribbon(data = plot_data2, aes(x = EPE_Y1_scale, ymax = fit + se.fit, ymin = fit - se.fit, fill = factor(teps_s)), alpha = .2) + 
+  scale_y_continuous(labels = scales::percent, name = "p(Reject)") +
+  coord_cartesian(ylim = c(0, 1)) + 
+  xlab("Arousal PE") + 
+  scale_color_manual(labels = c("-1 SD", "0 SD", "+ 1 SD"), values = c("#eff3ff", "#6baed6", "#08519c"), name = "TEPS SDs") +
+  scale_fill_manual(labels = c("-1 SD", "0 SD", "+ 1 SD"), values = c("#eff3ff", "#6baed6", "#08519c"), name = "TEPS SDs") +
+  geom_vline(xintercept = 0, lty = 3) + 
+  theme_bw() + theme(text = element_text(size = 20), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+figS15c_plot <- ggplot() + 
+  geom_line(data = plot_data3, aes(x = RPE_scale, y = fit, color = factor(teps_s)), size = 1.5) + 
+  geom_ribbon(data = plot_data3, aes(x = RPE_scale, ymax = fit + se.fit, ymin = fit - se.fit, fill = factor(teps_s)), alpha = .2) + 
+  scale_y_continuous(labels = scales::percent, name = "p(Reject)") +
+  coord_cartesian(ylim = c(0, 1)) + 
+  scale_color_manual(labels = c("-1 SD", "0 SD", "+ 1 SD"), values = c("#eff3ff", "#6baed6", "#08519c"), name = "TEPS SDs") +
+  scale_fill_manual(labels = c("-1 SD", "0 SD", "+ 1 SD"), values = c("#eff3ff", "#6baed6", "#08519c"), name = "TEPS SDs") +
+  xlab("Reward PE") + 
+  geom_vline(xintercept = 0, lty = 3) + 
+  theme_bw() + theme(text = element_text(size = 20), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+figS15_plot <- cowplot::plot_grid(figS15a_plot, figS15b_plot, figS15c_plot, labels = c("A", "B", "C"), nrow = 1)
+figS15_plot
+ggsave(filename = paste0(dir_graphs, "/supplement/experiment4/figS15.pdf"), plot=figS15_plot, width = 16, height = 6, useDingbats = F)
+```
+
+### Other reward-related questionnaires and relationship to PE 
+
+```{r other}
+## BIS
+bis_data <- study4_behavior_questionnaires %>% 
+  select(sub, choice, bis, EPE_X1_scale, EPE_Y1_scale, RPE_scale) %>%
+  mutate(bis_s = as.numeric(scale(bis)))
+  
+bis_model <- glmer(choice ~ EPE_X1_scale*bis_s + EPE_Y1_scale*bis_s + RPE_scale*bis_s + (1 + EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
+            data = bis_data,
+            family = binomial, 
+            control = glmerControl(optimizer = "bobyqa"))
+#summary(bis_model)
+
+## AES
+aes_data <- study4_behavior_questionnaires %>% 
+  select(sub, choice, aesTotal, EPE_X1_scale, EPE_Y1_scale, RPE_scale) %>%
+  mutate(aes_s = as.numeric(scale(aesTotal)))
+  
+aes_model <- glmer(choice ~ EPE_X1_scale*aes_s + EPE_Y1_scale*aes_s + RPE_scale*aes_s + (1 + EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
+            data = aes_data,
+            family = binomial, 
+            control = glmerControl(optimizer = "bobyqa"))
+#summary(aes_model)
+
+## SHAPS
+shaps_data <- study4_behavior_questionnaires %>% 
+  select(sub, choice, shapsTotal, EPE_X1_scale, EPE_Y1_scale, RPE_scale) %>%
+  mutate(shaps_s = as.numeric(scale(shapsTotal)))
+  
+shaps_model <- glmer(choice ~ EPE_X1_scale*shaps_s + EPE_Y1_scale*shaps_s + RPE_scale*shaps_s + (1 + EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
+            data = shaps_data,
+            family = binomial, 
+            control = glmerControl(optimizer = "bobyqa"))
+#summary(shaps_model)
+```
+
+### Table S19 and S20: Healthy and Depressed individuals respectively
+
+```{r tableS19_tableS20}
+### Table S19
+tableS19_data <- study4_behavior %>% 
+  filter(cesDepress == "Healthy_Controls")
+
+tableS19 <- glmer(choice ~ EPE_X1_scale + EPE_Y1_scale + RPE_scale + (1 + EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
+            data = tableS19_data,
+            family = binomial, 
+            control = glmerControl(optimizer = "bobyqa"))
+
+tab_model(tableS19, transform = NULL, title = "Experiment 4: Healthy Controls use of PEs",
+          pred.labels = c("Intercept", "Valence PE", "Arousal PE", "Reward PE"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+           CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment4/tableS19.html"))
+
+### Table S20
+tableS20_data <- study4_behavior %>% 
+  filter(cesDepress == "Clinically_Depressed")
+
+tableS20 <- glmer(choice ~ EPE_X1_scale + EPE_Y1_scale + RPE_scale + (1 + EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
+            data = tableS20_data,
+            family = binomial, 
+            control = glmerControl(optimizer = "bobyqa"))
+
+tab_model(tableS20, transform = NULL, title = "Experiment 4: Individuals at risk of depression use of PEs",
+          pred.labels = c("Intercept", "Valence PE", "Arousal PE", "Reward PE"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+           CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment4/tableS20.html"))
+
+## Beta comparison
+tableS20_coefs <- fixef(tableS20)
+tableS20_coefs_se <- sqrt(diag(vcov(tableS20)))
+z_score <- (as.numeric(tableS20_coefs["EPE_X1_scale"]) - as.numeric(tableS20_coefs["RPE_scale"])) / (sqrt(tableS20_coefs_se[2]^2 + tableS20_coefs_se[4]^2))
+pvalue <- pnorm(-abs(z_score))
+```
+
+### Table S21: Experiences predicting choices in clinical groups
+
+```{r tableS21}
+tableS21_data <- study4_behavior %>% 
+  mutate(cesDepress_binary = case_when(cesDepress == "Healthy_Controls" ~ 0, 
+                                       cesDepress == "Clinically_Depressed" ~ 1)) %>%
+  mutate(reward_norm = as.numeric(scale(reward)))
+
+tableS21 <- glmer(choice ~ feedback_X1_scale*cesDepress_binary + feedback_Y1_scale*cesDepress_binary + reward_norm*cesDepress_binary + (1 + feedback_X1_scale + feedback_Y1_scale + reward_norm|sub), 
+            data = tableS21_data,
+            family = binomial, 
+            control = glmerControl(optimizer = "bobyqa"))
+
+tab_model(tableS21, transform = NULL, title = "Experiment 4: Clinical groups use of experience",
+          pred.labels = c("Intercept", "Valence Experience", "Depression", "Arousal Experience", "Reward Experience", 
+                          "Valence Experience:Depression", "Arousal Experience:Depression", "Reward Experience:Depression"),
+          dv.labels = c("Estimates"), string.est = "Log-Odds", string.se = "SE", string.stat = "Z", 
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+           CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment4/tableS21.html"))
+```
+
+### Expectation and Prediction Error Model Comparisons and Additive vs Interactive Model Comparisons
+
+```{r expect_pe_compare}
+### Expectation and Prediction Error Model Comparisons
+table_data <- study4_behavior %>% 
+  filter(cesDepress == "Healthy_Controls")
+
+## Reward only
+table_a <- glmer(choice ~ RP_scale + RPE_scale + (1 + RPE_scale|sub), 
+                 data = table_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+## Reward and Valence
+table_b <- glmer(choice ~ EP_X1_scale + RP_scale + EPE_X1_scale + RPE_scale + (1 + RPE_scale|sub), 
+                 data = table_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+## Reward, Valence, and Arousal 
+table_c <- glmer(choice ~ EP_X1_scale + EP_Y1_scale + RP_scale + EPE_X1_scale + EPE_Y1_scale + RPE_scale + (1 + RPE_scale|sub), 
+                 data = table_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+anova(table_a, table_b)
+anova(table_b, table_c)
+
+## Additive vs interactive for healthy controls
+table_d <- glmer(choice ~ EPE_X1_scale*EPE_Y1_scale*RPE_scale + (1 + RPE_scale|sub), 
+                 data = table_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+## Additive
+table_e <- glmer(choice ~ EPE_X1_scale+EPE_Y1_scale+RPE_scale + (1 + RPE_scale|sub), 
+                 data = table_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+anova(table_d, table_e)
+```
+
+### Table S22: Controlling for Expectations in the Interactive Model
+
+```{r tableS22}
+tableS22_data <- study4_behavior %>% 
+  filter(cesDepress == "Healthy_Controls")
+
+## Interactions
+tableS22a <- glmer(choice ~ EPE_X1_scale*EPE_Y1_scale*RPE_scale + (1 + RPE_scale|sub), 
+                 data = tableS22_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+## Expectations + Interactions
+tableS22b <- glmer(choice ~ EP_X1_scale + EP_Y1_scale + RP_scale + EPE_X1_scale*EPE_Y1_scale*RPE_scale + (1 + RPE_scale|sub), 
+                 data = tableS22_data,
+                 family=binomial(link="logit"),
+                 control=glmerControl(optimizer="bobyqa",
+                                      optCtrl=list(maxfun=2e5)))
+
+anova(tableS22a, tableS22b)
+
+tab_model(tableS22b, transform = NULL, title = "Experiment 4: Controlling for Expectations in the Interactive Model", 
+          pred.labels = c("Intercept", "Valence Expectations", "Arousal Expectations", "Reward Expectations", 
+                          "Valence PE", "Arousal PE", "Reward PE", "Valence PE: Arousal PE", "Valence PE: Reward PE", "Arousal PE: Reward PE", "Valence PE: Arousal PE: Reward PE"),
+          dv.labels = c("Estimates"),
+          show.se = TRUE, show.stat = TRUE, show.ci = FALSE, 
+          show.re.var = FALSE, show.aic = FALSE, show.dev = FALSE, 
+          show.r2 = FALSE, show.icc = FALSE, show.obs = TRUE,
+           CSS = css_theme("regression"), file = str_c(dir_graphs, "/supplement/experiment4/tableS22.html"))
+```
+
+## E4: Computational Modeling
+
+### Figure S16 and Table S23: Model comparison
+
+```{r figS16_tableS23}
+dir_mdd_models <- str_c(dir_data, "/study4_mdd/oscar/model_comparison/")
+
+bic <- function(ll, N, k) { -2 * ll + log(N) * k }    # -2 * LL + log(N) * k
+
+# Load   
+df_m1a <- read_csv(str_c(dir_mdd_models, "/study4_m1a.csv")) %>% 
+  select(sub, m1a_ll = log_lik, soft_beta = beta, w1) %>% 
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2))
+df_m1b <- read_csv(str_c(dir_mdd_models, "/study4_m1b.csv")) %>% 
+  select(sub, m1b_ll = log_lik, soft_beta = beta, w1, w2) %>% 
+  mutate(m1b_bic = bic(ll = m1b_ll, N = 20, k = 3))
+df_m1c <- read_csv(str_c(dir_mdd_models, "/study4_m1c.csv")) %>% 
+  select(sub, m1c_ll = log_lik, soft_beta = beta, w1, w2, w3) %>% 
+  mutate(m1c_bic = bic(ll = m1c_ll, N = 20, k = 4))
+df_m2a <- read_csv(str_c(dir_mdd_models, "/study4_m2a.csv")) %>% 
+  select(sub, m2a_ll = log_lik, soft_beta = beta, pt_beta, w1) %>% 
+  mutate(m2a_bic = bic(ll = m2a_ll, N = 20, k = 3))
+df_m2b <- read_csv(str_c(dir_mdd_models, "/study4_m2b.csv")) %>% 
+  select(sub, m2b_ll = log_lik, soft_beta = beta, pt_beta, w1, w2) %>% 
+  mutate(m2b_bic = bic(ll = m2b_ll, N = 20, k = 4))
+df_m2c <- read_csv(str_c(dir_mdd_models, "/study4_m2c.csv")) %>% 
+  select(sub, m2c_ll = log_lik, soft_beta = beta, pt_beta, w1, w2, w3) %>% 
+  mutate(m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+# Exclusion
+study4_emotion <- read_csv(str_c(dir_mdd_models, "/study4_ec.csv"))
+
+study4_check <- study4_emotion %>% filter(emotion == "neutral") %>% 
+  mutate(exclude = if_else(between(X1, -50, 50) & between(Y1, -50, 50), "keep", "remove"), 
+         study = "study4")
+
+## Create table
+tableS23 <- df_m1a %>% left_join(., study4_check, by = "sub") %>% filter(exclude == "keep") %>%
+  summarise(bic = mean(m1a_bic), bic_sd = sd(m1a_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m1a") %>% 
+  bind_rows(df_m1b %>% left_join(., study4_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m1b_bic), bic_sd = sd(m1b_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m1b")) %>% 
+    bind_rows(df_m1c %>% left_join(., study4_check, by = "sub") %>% filter(exclude == "keep") %>%
+                summarise(bic = mean(m1c_bic), bic_sd = sd(m1c_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m1c")) %>% 
+  bind_rows(df_m2a %>% left_join(., study4_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m2a_bic), bic_sd = sd(m2a_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m2a")) %>% 
+  bind_rows(df_m2b %>% left_join(., study4_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m2b_bic), bic_sd = sd(m2b_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m2b")) %>% 
+  bind_rows(df_m2c %>% left_join(., study4_check, by = "sub") %>% filter(exclude == "keep") %>%
+              summarise(bic = mean(m2c_bic), bic_sd = sd(m2c_bic), N = n(), bic_se = bic_sd / sqrt(N)) %>% mutate(model = "m2c")) %>%
+  mutate(delta = bic - min(bic)) %>% 
+  mutate_if(is.numeric, round, 2)
+
+## Figure S16
+# Comparing all models
+figS16a_data <- df_m1a %>%
+  select(sub, contains("m1a_")) %>% 
+  left_join(df_m1b %>% select(sub, contains("m1b_")), by = "sub") %>%
+  left_join(df_m1c %>% select(sub, contains("m1c_")), by = "sub") %>%
+  left_join(df_m2a %>% select(sub, contains("m2a_")), by = "sub") %>%
+  left_join(df_m2b %>% select(sub, contains("m2b_")), by = "sub") %>%
+  left_join(df_m2c %>% select(sub, contains("m2c_")), by = "sub") %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "model", values_to = "bic") %>%
+  mutate(model = case_when(model == "m1a_bic" ~ "m1a", 
+                           model == "m1b_bic" ~ "m1b", 
+                           model == "m1c_bic" ~ "m1c", 
+                           model == "m2a_bic" ~ "m2a", 
+                           model == "m2b_bic" ~ "m2b", 
+                           model == "m2c_bic" ~ "m2c")) %>%
+  left_join(study4_check %>% select(sub, exclude), by = "sub") %>%
+  filter(exclude == "keep")
+
+fig16b_data <- figS16a_data %>%
+  group_by(model) %>%
+  summarise(Mean = mean(bic), SD = sd(bic), N = n(), SE = SD / sqrt(N)) %>%
+  mutate_if(is.numeric, round, 2)
+
+figS16_plot <- ggplot() + 
+  geom_col(data = fig16b_data, aes(x = model, y = Mean), fill = "white", color = "red") + 
+  geom_errorbar(data = fig16b_data, aes(x = model, y = Mean, ymin = Mean - SE, ymax = Mean + SE), width = .1, color = "red") + 
+  ggbeeswarm::geom_quasirandom(data = figS16a_data, aes(x = model, y = bic), method = "pseudorandom", alpha = .6) + 
+  # Annotate
+  ylab("BIC") + 
+  xlab("Model") + 
+  theme_classic() + 
+  theme(text = element_text(size = 15))
+figS16_plot
+ggsave(filename = str_c(dir_graphs, "/supplement/experiment4/figS16.pdf"), plot = figS16_plot, width = 6, height = 4)
+
+## Significance
+## M1a - m1b
+figS16a_test <- figS16a_data %>%
+  filter(model %in% c("m2a", "m1a")) # change models accordingly
+t.test(figS16a_test$bic[figS16a_test$model == "m2a"], figS16a_test$bic[figS16a_test$model == "m1a"], paired = T)
+
+figS16a_test <- figS16a_data %>%
+  filter(model %in% c("m1b", "m1a")) # change models accordingly
+t.test(figS16a_test$bic[figS16a_test$model == "m1b"], figS16a_test$bic[figS16a_test$model == "m1a"], paired = T)
+
+figS16a_test <- figS16a_data %>%
+  filter(model %in% c("m2b", "m2a")) # change models accordingly
+t.test(figS16a_test$bic[figS16a_test$model == "m2b"], figS16a_test$bic[figS16a_test$model == "m2a"], paired = T)
+
+figS16a_test <- figS16a_data %>%
+  filter(model %in% c("m1b", "m2b")) # change models accordingly
+t.test(figS16a_test$bic[figS16a_test$model == "m1b"], figS16a_test$bic[figS16a_test$model == "m2b"], paired = T)
+
+figS16a_test <- figS16a_data %>%
+  filter(model %in% c("m1b", "m1c")) # change models accordingly
+t.test(figS16a_test$bic[figS16a_test$model == "m1c"], figS16a_test$bic[figS16a_test$model == "m1b"], paired = T)
+
+figS16a_test <- figS16a_data %>%
+  filter(model %in% c("m1c", "m2c")) # change models accordingly
+t.test(figS16a_test$bic[figS16a_test$model == "m1c"], figS16a_test$bic[figS16a_test$model == "m2c"], paired = T)
+
+figS16a_test <- figS16a_data %>%
+  filter(model %in% c("m2c", "m2b")) # change models accordingly
+t.test(figS16a_test$bic[figS16a_test$model == "m2c"], figS16a_test$bic[figS16a_test$model == "m2b"], paired = T)
+
+figS16a_data %>%
+  filter(model %in% c("m1b", "m1c")) %>%
+  select(sub, model, bic) %>%
+  pivot_wider(names_from = model, values_from = bic) %>%
+  mutate(best = case_when(m1b < m1c ~ "m1b", 
+                          m1b == m1c ~ "equal", 
+                          m1b > m1c ~ "m1c")) %>%
+  group_by(best) %>% 
+  tally()
+```
+
+### Figure S17: Parameter Recovery
+
+```{r figS17}
+# Parameters constrained by priors
+df_m1c_p <- read_csv(file = str_c(dir_data, "/study4_mdd/oscar/param_recovery/study4_m1c_prior.csv")) %>% select(-X1)
+
+# Recovery 
+df_param <- read_csv(file = str_c(dir_data, "/study4_mdd/oscar/param_recovery/study4_m1c_param_prior.csv")) %>% 
+  select(-X1, -log_lik) %>%
+  pivot_longer(cols = -sub, names_to = "params", values_to = "recovered")
+
+figS17_data <- df_param %>%
+  left_join(df_m1c_p %>% select(sub, beta, w1, w2, w3) %>% pivot_longer(cols = -sub, names_to = "params", values_to = "original"), by = c("sub", "params")) %>%
+  mutate(params = case_when(params == "beta" ~ "inverse temp", 
+                            params == "w1" ~ "w1 - RPE", 
+                            params == "w2" ~ "w2 - VPE", 
+                            params == "w3" ~ "w3 - APE"))
+
+# Correlations
+beta_r <- cor.test(figS17_data$original[figS17_data$params == "inverse temp"], figS17_data$recovered[figS17_data$params == "inverse temp"], method = "spearman")
+w1_r <- cor.test(figS17_data$original[figS17_data$params == "w1 - RPE"], figS17_data$recovered[figS17_data$params == "w1 - RPE"], method = "spearman")
+w2_r <- cor.test(figS17_data$original[figS17_data$params == "w2 - VPE"], figS17_data$recovered[figS17_data$params == "w2 - VPE"], method = "spearman")
+w3_r <- cor.test(figS17_data$original[figS17_data$params == "w3 - APE"], figS17_data$recovered[figS17_data$params == "w3 - APE"], method = "spearman")
+
+figS17_plot <- ggplot(figS17_data, aes(x = original, y = recovered)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", se = F, aes(color = "red")) + 
+  geom_abline(aes(color = "blue", slope = 1, intercept = 0)) + 
+  scale_color_identity(name = "Model fit",
+                       breaks = c("blue", "red"),
+                       labels = c("Ideal", "Empirical"),
+                       guide = "legend") + 
+  facet_wrap(~params, scales = "free") +
+  xlab("Fit") + 
+  ylab("Recovery") + 
+  theme_classic() + 
+  theme(aspect.ratio = 1, text = element_text(size = 15))
+figS17_plot
+
+ggsave(filename = str_c(dir_graphs, "/supplement/experiment4/figS17.pdf"), plot = figS17_plot, width = 6, height = 6)
+```
+
+### Figure S18 - Model Identifiability
+
+```{r figS18}
+df_m1a_sim <- read_csv(str_c(dir_data, "/study4_mdd/oscar/model_identify/study4_m1a_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m1b_sim <- read_csv(str_c(dir_data, "/study4_mdd/oscar/model_identify/study4_m1b_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m1c_sim <- read_csv(str_c(dir_data, "/study4_mdd/oscar/model_identify/study4_m1c_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m2a_sim <- read_csv(str_c(dir_data, "/study4_mdd/oscar/model_identify/study4_m2a_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m2b_sim <- read_csv(str_c(dir_data, "/study4_mdd/oscar/model_identify/study4_m2b_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+df_m2c_sim <- read_csv(str_c(dir_data, "/study4_mdd/oscar/model_identify/study4_m2c_sim_identify.csv")) %>% 
+  select(-X1) %>%
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
+         m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
+         m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
+         m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
+         m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
+         m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
+
+# Find best
+df_m1a <- df_m1a_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m1a", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+df_m1b <- df_m1b_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m1b", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+  
+df_m1c <- df_m1c_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m1c", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+df_m2a <- df_m2a_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m2a", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+df_m2b <- df_m2b_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m2b", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+df_m2c <- df_m2c_sim %>%
+  select(sub, contains("_bic")) %>%
+  pivot_longer(cols = -sub, names_to = "fit_model", values_to = "bic") %>%
+  group_by(sub) %>%
+  filter(bic == min(bic)) %>%
+  group_by(fit_model) %>% 
+  count(.drop = FALSE) %>%
+  ungroup() %>%
+  mutate(freq = n / sum(n), 
+         sim_model = "m2c", 
+         fit_model = str_remove(fit_model, "_bic")) %>%
+  select(fit_model, sim_model, freq)
+
+# Create confusion matrix
+figS18_data <- df_m1a %>%
+  bind_rows(df_m1b) %>%
+  bind_rows(df_m1c) %>%
+  bind_rows(df_m2a) %>%
+  bind_rows(df_m2b) %>%
+  bind_rows(df_m2c)
+
+figS18_plot <- ggplot(figS18_data, aes(x = fit_model, y = sim_model, fill = freq)) + 
+  geom_tile() + 
+  geom_text(aes(label=round(freq, 2)), color = "white") +
+  coord_fixed() + 
+  scale_fill_gradient2(low = "#343086", mid = "#4DBD92", midpoint = .5, high = "#F3EA22", limits = c(0, 1)) + 
+  theme_classic() 
+figS18_plot
+
+ggsave(filename = str_c(dir_graphs, "/supplement/experiment4/figS18.pdf"), figS18_plot, width = 6, height = 6)
+```
