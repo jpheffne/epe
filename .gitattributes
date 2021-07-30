@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+data/study3_jg/study3_jg_decision_dynamic.csv filter=lfs diff=lfs merge=lfs -text
+data/study3_jg/study3_jg_feedback_dynamic.csv filter=lfs diff=lfs merge=lfs -text
+data/study3_jg/study3_jg_post_dynamic.csv filter=lfs diff=lfs merge=lfs -text
+data/study3_jg/study3_jg_prediction_dynamic.csv filter=lfs diff=lfs merge=lfs -text
