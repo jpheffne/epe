@@ -4,3 +4,7 @@ manuscript/
 graphs/nhb_format/
 graphs/supplement/old
 data/study3_jg/study3_ec_dynamic.csv
+data/study3_jg/study3_jg_decision_dynamic.csv
+data/study3_jg/study3_jg_feedback_dynamic.csv
+data/study3_jg/study3_jg_post_dynamic.csv
+data/study3_jg/study3_jg_prediction_dynamic.csv
