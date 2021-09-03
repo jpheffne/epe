@@ -30,8 +30,8 @@ To install these packages simply use the `install.packages()` function and put e
 # Knitr options
 knitr::opts_chunk$set(echo = FALSE, warnings = FALSE, message = FALSE)
 
-# Load study 3 dynamic or not (large dataset)
-read_study3 <- TRUE # if you want to load study 3 dynamic data make TRUE 
+# Load study 3 dynamic or not (large dataset, takes awhile)
+read_study3 <- FALSE # if you want to load study 3 dynamic data make TRUE (note you have to download data from other repository and place in correct folder, or change the directory path yourself)
 
 # Libraries
 library(here)         # relative paths
@@ -365,10 +365,12 @@ ggsave(filename = paste0(dir_graphs, "/supplement/experiment1/figS2.pdf"), plot=
 ### Table S1: Third-parties and responders treat unfairness similarly
 
 ```{r table_s1}
-tableS1_data <- study1_behavior
+tableS1_data <- study1_behavior %>%
+  mutate(role_num = case_when(role == "self" ~ 1, 
+                              role == "other" ~ 0))
 
 # Unfairness analysis
-tableS1 <- glmer(choice ~ unfairness_norm*role + (1 + unfairness_norm|sub), 
+tableS1 <- glmer(choice ~ unfairness_norm*role_num + (1 + unfairness_norm|sub), 
             data = tableS1_data,
             family = binomial, 
             control=glmerControl(optimizer='bobyqa', 
@@ -386,9 +388,11 @@ tab_model(tableS1, transform = NULL, title = "Experiment 1: Third-parties and re
 ### Table S2: Third-parties and responders treat prediction errors similarly
 
 ```{r table_s2}
-tableS2_data <- study1_behavior
+tableS2_data <- study1_behavior %>%
+    mutate(role_num = case_when(role == "self" ~ 1, 
+                              role == "other" ~ 0))
 
-tableS2 <- glmer(choice ~ EPE_X1_scale*role + EPE_Y1_scale*role + RPE_scale*role + (1 +  EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
+tableS2 <- glmer(choice ~ EPE_X1_scale*role_num + EPE_Y1_scale*role_num + RPE_scale*role_num + (1 +  EPE_X1_scale + EPE_Y1_scale + RPE_scale|sub), 
             data = tableS2_data,
             family = binomial, 
             control=glmerControl(optimizer='bobyqa', 
@@ -732,20 +736,24 @@ figS4a_test <- figS4a_data %>%
 t.test(figS4a_test$bic[figS4a_test$model == "m2b"], figS4a_test$bic[figS4a_test$model == "m2a"], paired = T)
 
 figS4a_test <- figS4a_data %>%
+  filter(model %in% c("m1b", "m2b")) # change models accordingly
+t.test(figS4a_test$bic[figS4a_test$model == "m1b"], figS4a_test$bic[figS4a_test$model == "m2b"], paired = T)
+
+figS4a_test <- figS4a_data %>%
   filter(model %in% c("m1c", "m1b")) # change models accordingly
 t.test(figS4a_test$bic[figS4a_test$model == "m1c"], figS4a_test$bic[figS4a_test$model == "m1b"], paired = T)
 
 figS4a_test <- figS4a_data %>%
-  filter(model %in% c("m2b", "m2c")) # change models accordingly
-t.test(figS4a_test$bic[figS4a_test$model == "m2c"], figS4a_test$bic[figS4a_test$model == "m2b"], paired = T)
+  filter(model %in% c("m2c", "m2b")) # change models accordingly
+t.test(figS4a_test$bic[figS4a_test$model == "m2b"], figS4a_test$bic[figS4a_test$model == "m2c"], paired = T)
+
+figS4a_test <- figS4a_data %>%
+  filter(model %in% c("m1b", "m2b")) # change models accordingly
+t.test(figS4a_test$bic[figS4a_test$model == "m1b"], figS4a_test$bic[figS4a_test$model == "m2b"], paired = T)
 
 figS4a_test <- figS4a_data %>%
   filter(model %in% c("m2c", "m1c")) # change models accordingly
-t.test(figS4a_test$bic[figS4a_test$model == "m1c"], figS4a_test$bic[figS4a_test$model == "m2c"], paired = T)
-
-figS4a_test <- figS4a_data %>%
-  filter(model %in% c("m1c", "m2c")) # change models accordingly
-t.test(figS4a_test$bic[figS4a_test$model == "m1c"], figS4a_test$bic[figS4a_test$model == "m2c"], paired = T)
+t.test(figS4a_test$bic[figS4a_test$model == "m2c"], figS4a_test$bic[figS4a_test$model == "m1c"], paired = T)
 
 ## Percentage best fit by m1c vs m1b
 figS4a_data %>%
@@ -1260,28 +1268,22 @@ bic <- function(ll, N, k) { -2 * ll + log(N) * k }    # -2 * LL + log(N) * k
 # Load   
 df_m1a <- read_csv(str_c(dir_jg_models, "/study3_m1a.csv")) %>% 
   select(sub, m1a_ll = log_lik, soft_beta = beta, w1) %>% 
-  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2), 
-         m1a_aic = aic(ll = m1a_ll, N = 20, k = 2))
+  mutate(m1a_bic = bic(ll = m1a_ll, N = 20, k = 2))
 df_m1b <- read_csv(str_c(dir_jg_models, "/study3_m1b.csv")) %>% 
   select(sub, m1b_ll = log_lik, soft_beta = beta, w1, w2) %>% 
-  mutate(m1b_bic = bic(ll = m1b_ll, N = 20, k = 3), 
-         m1b_aic = aic(ll = m1b_ll, N = 20, k = 3))
+  mutate(m1b_bic = bic(ll = m1b_ll, N = 20, k = 3))
 df_m1c <- read_csv(str_c(dir_jg_models, "/study3_m1c.csv")) %>% 
   select(sub, m1c_ll = log_lik, soft_beta = beta, w1, w2, w3) %>% 
-  mutate(m1c_bic = bic(ll = m1c_ll, N = 20, k = 4), 
-         m1c_aic = aic(ll = m1c_ll, N = 20, k = 4))
+  mutate(m1c_bic = bic(ll = m1c_ll, N = 20, k = 4))
 df_m2a <- read_csv(str_c(dir_jg_models, "/study3_m2a.csv")) %>% 
   select(sub, m2a_ll = log_lik, soft_beta = beta, pt_beta, w1) %>% 
-  mutate(m2a_bic = bic(ll = m2a_ll, N = 20, k = 3), 
-         m2a_aic = aic(ll = m2a_ll, N = 20, k = 3))
+  mutate(m2a_bic = bic(ll = m2a_ll, N = 20, k = 3))
 df_m2b <- read_csv(str_c(dir_jg_models, "/study3_m2b.csv")) %>% 
   select(sub, m2b_ll = log_lik, soft_beta = beta, pt_beta, w1, w2) %>% 
-  mutate(m2b_bic = bic(ll = m2b_ll, N = 20, k = 4), 
-         m2b_aic = aic(ll = m2b_ll, N = 20, k = 4))
+  mutate(m2b_bic = bic(ll = m2b_ll, N = 20, k = 4))
 df_m2c <- read_csv(str_c(dir_jg_models, "/study3_m2c.csv")) %>% 
   select(sub, m2c_ll = log_lik, soft_beta = beta, pt_beta, w1, w2, w3) %>% 
-  mutate(m2c_bic = bic(ll = m2c_ll, N = 20, k = 5), 
-         m2c_aic = aic(ll = m2c_ll, N = 20, k = 5))
+  mutate(m2c_bic = bic(ll = m2c_ll, N = 20, k = 5))
 
 # Exclusion
 study3_emotion <- read_csv(str_c(dir_jg_models, "/study3_ec.csv"))
