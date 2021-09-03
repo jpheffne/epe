@@ -3,8 +3,4 @@ oscar_model/
 manuscript/
 graphs/nhb_format/
 graphs/supplement/old
-data/study3_jg/study3_ec_dynamic.csv
-data/study3_jg/study3_decision_dynamic.csv
-data/study3_jg/study3_feedback_dynamic.csv
-data/study3_jg/study3_post_dynamic.csv
-data/study3_jg/study3_prediction_dynamic.csv
+dynamic*
