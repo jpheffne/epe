@@ -274,7 +274,7 @@ pvalue <- pnorm(-abs(z_score))
 
 ## Subjective RPE analysis
 
-Analysis contained in `epe_models.Rmd` in the oscar folder. 
+Data to reproduce figures and tables can be found within the oscar folders of each study folder. 
 
 ## Secondary model analysis
 
