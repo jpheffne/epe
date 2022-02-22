@@ -40,7 +40,7 @@ This repo contains the following folders: analysis, data, and graphs.
 
 2. **data**
 
-   Cleaned data can be found here for all experiments separately. **Note** Data files for Experiment 3, involving mouse tracking, are too large to host in Github but can be found in an OSF repository [here](https://osf.io/puwt8/). You'll want to place these in the `data/study3_jg/` folder or change the path locations in the analysis script. 
+   Cleaned data can be found here for all experiments separately. **Note** Data files for Experiment 3, involving mouse tracking, are too large to host in Github but can be found in an OSF repository [here](https://osf.io/543yw/). You'll want to place these in the `data/study3_jg/` folder or change the path locations in the analysis script. 
 
 3. **graphs**
 
